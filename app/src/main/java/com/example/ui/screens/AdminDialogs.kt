@@ -272,12 +272,25 @@ fun AdminProfileEditDialog(
     var pinCode by remember { mutableStateOf(profile.pinCode) }
     var photoUri by remember { mutableStateOf(profile.photoUri) }
     var isPinVisible by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) {
-            photoUri = uri.toString()
+            // The picker returns a temporary content:// URI whose permission does not survive
+            // a restart: convert it to a small WebP file in internal storage right away, so the
+            // avatar stays available locally and can be uploaded to Supabase Storage.
+            scope.launch {
+                val bytes = PhotoCompressor.uriToWebp(context, uri)
+                val saved = if (bytes != null) {
+                    PhotoCompressor.saveBytes(context, "admin_profile", bytes)
+                } else {
+                    null
+                }
+                photoUri = saved ?: uri.toString()
+            }
         }
     }
 

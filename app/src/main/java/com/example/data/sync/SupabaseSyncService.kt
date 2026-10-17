@@ -49,11 +49,17 @@ class SupabaseSyncService(
     }
 
     private val prefs = context.getSharedPreferences("judo_supabase_prefs", Context.MODE_PRIVATE)
+
+    /** The app's own preferences: club identity, admin/coach profiles (local source of truth). */
+    private val appPrefs = context.getSharedPreferences("judo_seddouk_prefs", Context.MODE_PRIVATE)
     private val syncQueueDao = database.syncQueueDao()
     private val auditLogDao = database.syncAuditLogDao()
     private val memberDao = database.memberDao()
     private val attendanceDao = database.attendanceDao()
     private val clubDao = database.clubDao()
+
+    /** Profile photos travel through Supabase Storage, never through a database row. */
+    private val storage = SupabaseStorageService()
 
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
@@ -179,7 +185,16 @@ class SupabaseSyncService(
             put("status", member.status)
             put("registration_date", member.registrationDate)
             put("photo_url", member.photoUrl)
-            put("photo_webp", PhotoCompressor.readBase64(member.photoUrl) ?: JSONObject.NULL)
+            // The photo bytes go to Supabase Storage; the row only carries the object key.
+            // "photo_local_path" is a local-only helper read by the sync engine (and stripped
+            // before the row is sent), so the tablet still keeps the original file.
+            put(
+                "photo_object",
+                if (member.photoUrl.isNotBlank()) SupabaseStorageService.memberPhotoKey(member.id)
+                else JSONObject.NULL
+            )
+            put("photo_local_path", member.photoUrl)
+            put("photo_webp", JSONObject.NULL)
             put("notes", member.notes)
             put("updated_at", getIsoNow())
         }
@@ -251,7 +266,13 @@ class SupabaseSyncService(
             put("assigned_categories", categoriesArray)
             put("is_active", coach.isActive)
             put("sessions_count", coach.sessionsCount)
-            put("photo_webp", PhotoCompressor.readBase64(coach.photoPath) ?: JSONObject.NULL)
+            put(
+                "photo_object",
+                if (coach.photoPath.isNotBlank()) SupabaseStorageService.coachPhotoKey(coach.id)
+                else JSONObject.NULL
+            )
+            put("photo_local_path", coach.photoPath)
+            put("photo_webp", JSONObject.NULL)
             put("updated_at", getIsoNow())
         }
         syncQueueDao.enqueue(
@@ -354,6 +375,73 @@ class SupabaseSyncService(
         triggerBackgroundAutoSync()
     }
 
+    /**
+     * Backs up the settings that only live in SharedPreferences (club identity, admin profile,
+     * coach profile, scheduled sessions) as a single `club_settings` row.
+     *
+     * The admin PIN is deliberately **not** pushed: it is a local credential that grants access
+     * to the tablet and has no business being readable from the cloud backup.
+     */
+    suspend fun enqueueClubSettings() = withContext(Dispatchers.IO) {
+        try {
+            val coachProfile = JSONObject().apply {
+            put("name", appPrefs.getString("coach_name", "") ?: "")
+            put("title", appPrefs.getString("coach_title", "") ?: "")
+            put("belt", appPrefs.getString("coach_belt", "") ?: "")
+            put("dan", appPrefs.getString("coach_dan", "") ?: "")
+            put("phone", appPrefs.getString("coach_phone", "") ?: "")
+            put("club", appPrefs.getString("coach_club", "") ?: "")
+            put("bio", appPrefs.getString("coach_bio", "") ?: "")
+            put("photo_object", JSONObject.NULL)
+        }
+
+        val scheduledJson = appPrefs.getString("scheduled_sessions_json", null)
+
+        val adminPhotoUri = appPrefs.getString("admin_photo_uri", "") ?: ""
+
+        val json = JSONObject().apply {
+            put("id", "default")
+            put("club_name", appPrefs.getString("club_name", "") ?: "")
+            put("club_address", appPrefs.getString("club_address", "") ?: "")
+            put("club_phone", appPrefs.getString("club_phone", "") ?: "")
+            put("club_hours", appPrefs.getString("club_hours", "") ?: "")
+            put("club_season", appPrefs.getString("club_season", "") ?: "")
+            put("admin_name", appPrefs.getString("admin_name", "") ?: "")
+            put("admin_email", appPrefs.getString("admin_email", "") ?: "")
+            put("admin_phone", appPrefs.getString("admin_phone", "") ?: "")
+            put("admin_role", appPrefs.getString("admin_role", "") ?: "")
+            put(
+                "admin_photo_object",
+                if (adminPhotoUri.isNotBlank()) SupabaseStorageService.ADMIN_PHOTO_KEY else JSONObject.NULL
+            )
+            put("coach_profile", coachProfile)
+            if (scheduledJson.isNullOrBlank()) {
+                put("scheduled_sessions", JSONObject.NULL)
+            } else {
+                put("scheduled_sessions", JSONArray(scheduledJson))
+            }
+            // Local-only helper: the sync engine uploads these files to Storage and strips
+            // the field before posting the row.
+            put("admin_photo_local_path", adminPhotoUri)
+            put("admin_photo_bucket", SupabaseStorageService.BUCKET_CLUB_ASSETS)
+            put("admin_photo_object_key", SupabaseStorageService.ADMIN_PHOTO_KEY)
+            put("updated_at", getIsoNow())
+        }
+
+            syncQueueDao.enqueue(
+                SyncQueueEntity(
+                    entityType = "CLUB_SETTINGS",
+                    entityId = "default",
+                    operation = "UPSERT",
+                    payloadJson = json.toString()
+                )
+            )
+            triggerBackgroundAutoSync()
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "enqueueClubSettings failed: ${e.message}")
+        }
+    }
+
     suspend fun enqueueAllLocalData() = withContext(Dispatchers.IO) {
         val members = memberDao.getAllMembersDirect()
         for (m in members) {
@@ -379,6 +467,7 @@ class SupabaseSyncService(
         for (p in past) {
             enqueuePastSession(p)
         }
+        enqueueClubSettings()
     }
 
     // ----------------------------------------------------
@@ -429,11 +518,43 @@ class SupabaseSyncService(
                     try {
                         syncQueueDao.updateStatus(op.id, SyncStatus.IN_PROGRESS.name)
                         val table = mapEntityTypeToSupabaseTable(op.entityType)
-                        val success = if (op.operation == "DELETE") {
-                            deleteFromSupabase(cfg, table, op.entityId)
-                        } else {
-                            upsertToSupabase(cfg, table, op.payloadJson)
+
+                        if (op.operation == "DELETE") {
+                            val success = deleteFromSupabase(cfg, table, op.entityId)
+                            deleteRemotePhoto(cfg, op.entityType, op.entityId)
+                            if (success) {
+                                syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
+                                itemsSent++
+                                auditLogDao.insert(
+                                    SyncAuditLogEntity(
+                                        entityName = op.entityType,
+                                        entityId = op.entityId,
+                                        operationType = op.operation,
+                                        details = "Supprimé de la table $table"
+                                    )
+                                )
+                            } else {
+                                val errMsg = "Réponse serveur non-2xx sur la table $table"
+                                syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
+                                if (syncError == null) syncError = errMsg
+                            }
+                            continue
                         }
+
+                        // Upload the photo (if any) before publishing the row.
+                        val prepared = if (op.entityType == "CLUB_SETTINGS") {
+                            prepareClubSettingsPayload(cfg, op.payloadJson)
+                        } else {
+                            preparePayloadForPush(cfg, op.entityType, op.payloadJson)
+                        }
+                        if (!prepared.ok) {
+                            val errMsg = "Photo non téléversée vers Supabase Storage"
+                            syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
+                            if (syncError == null) syncError = errMsg
+                            continue
+                        }
+
+                        val success = upsertToSupabase(cfg, table, prepared.json)
 
                         if (success) {
                             syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
@@ -512,7 +633,117 @@ class SupabaseSyncService(
             "COACHES" -> "coaches"
             "SCHEDULED_SESSIONS" -> "scheduled_sessions"
             "PAST_SESSIONS" -> "past_sessions"
+            "CLUB_SETTINGS" -> "club_settings"
             else -> entityType.lowercase()
+        }
+    }
+
+    /**
+     * Uploads the local photo (when the payload carries one) to its Storage bucket and
+     * removes the local-only helper field, so the row pushed to PostgREST only references
+     * the object.
+     *
+     * [PreparedPayload.ok] is false when a photo could not be uploaded: the operation is
+     * then kept in the queue and retried on the next sync (we never publish a row that
+     * points to an object which was not stored).
+     */
+    private data class PreparedPayload(val json: String, val ok: Boolean)
+
+    private suspend fun preparePayloadForPush(
+        cfg: SupabaseConfig,
+        entityType: String,
+        payloadJson: String
+    ): PreparedPayload {
+        return try {
+            val obj = JSONObject(payloadJson)
+            val localPath = obj.optString("photo_local_path", "")
+            val objectKey = obj.optString("photo_object", "")
+            val bucket = bucketForEntityType(entityType)
+
+            if (localPath.isNotBlank() && bucket != null && objectKey.isNotBlank()) {
+                val bytes = PhotoCompressor.readBytes(localPath)
+                if (bytes == null || bytes.isEmpty()) {
+                    // Unreadable local file: do not advertise a missing object.
+                    obj.put("photo_object", JSONObject.NULL)
+                } else if (!storage.upload(cfg, bucket, objectKey, bytes)) {
+                    return PreparedPayload(payloadJson, false)
+                }
+            } else if (localPath.isBlank() && bucket != null) {
+                // The photo was removed locally: reflect that in the cloud as well.
+                obj.put("photo_object", JSONObject.NULL)
+            }
+
+            obj.remove("photo_local_path")
+            PreparedPayload(obj.toString(), true)
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "preparePayloadForPush: ${e.message}")
+            PreparedPayload(payloadJson, true)
+        }
+    }
+
+    private fun bucketForEntityType(entityType: String): String? = when (entityType) {
+        "MEMBERS" -> SupabaseStorageService.BUCKET_MEMBER_PHOTOS
+        "COACHES" -> SupabaseStorageService.BUCKET_COACH_PHOTOS
+        "CLUB_SETTINGS" -> SupabaseStorageService.BUCKET_CLUB_ASSETS
+        else -> null
+    }
+
+    /**
+     * Variant of [preparePayloadForPush] for the single `club_settings` row: the optional
+     * administrator avatar is uploaded to the `club-assets` bucket. This one is
+     * **best-effort** (the settings themselves are the important payload), so a failed avatar
+     * upload simply clears the reference instead of blocking the whole row.
+     */
+    private suspend fun prepareClubSettingsPayload(
+        cfg: SupabaseConfig,
+        payloadJson: String
+    ): PreparedPayload {
+        return try {
+            val obj = JSONObject(payloadJson)
+            val localPath = obj.optString("admin_photo_local_path", "")
+            val objectKey = obj.optString("admin_photo_object_key", "")
+            val bucket = obj.optString("admin_photo_bucket", SupabaseStorageService.BUCKET_CLUB_ASSETS)
+
+            if (localPath.isNotBlank() && objectKey.isNotBlank()) {
+                val bytes = PhotoCompressor.readBytes(localPath)
+                if (bytes == null || bytes.isEmpty()) {
+                    obj.put("admin_photo_object", JSONObject.NULL)
+                } else if (!storage.upload(cfg, bucket, objectKey, bytes)) {
+                    obj.put("admin_photo_object", JSONObject.NULL)
+                }
+            } else {
+                obj.put("admin_photo_object", JSONObject.NULL)
+            }
+
+            obj.remove("admin_photo_local_path")
+            obj.remove("admin_photo_bucket")
+            obj.remove("admin_photo_object_key")
+            PreparedPayload(obj.toString(), true)
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "prepareClubSettingsPayload: ${e.message}")
+            PreparedPayload(payloadJson, true)
+        }
+    }
+
+    /** Best-effort removal of the avatar object when a member / coach is deleted. */
+    private fun deleteRemotePhoto(cfg: SupabaseConfig, entityType: String, entityId: String) {
+        try {
+            when (entityType) {
+                "MEMBERS" -> {
+                    val id = entityId.toLongOrNull() ?: return
+                    storage.delete(
+                        cfg,
+                        SupabaseStorageService.BUCKET_MEMBER_PHOTOS,
+                        SupabaseStorageService.memberPhotoKey(id)
+                    )
+                }
+                "COACHES" -> storage.delete(
+                    cfg,
+                    SupabaseStorageService.BUCKET_COACH_PHOTOS,
+                    SupabaseStorageService.coachPhotoKey(entityId)
+                )
+            }
+        } catch (_: Exception) {
         }
     }
 
@@ -548,13 +779,36 @@ class SupabaseSyncService(
 
     private data class PullResult(val itemsReceived: Int, val conflictsResolved: Int)
 
+    /** GETs a PostgREST path and parses it as a JSON array (null on any error). */
+    private fun getRemoteArray(cfg: SupabaseConfig, path: String): JSONArray? {
+        return try {
+            val request = Request.Builder()
+                .url("${cfg.url}/rest/v1/$path")
+                .addHeader("apikey", cfg.anonKey)
+                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+                .get()
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val body = response.body?.string() ?: return null
+                if (body.isBlank() || !body.startsWith("[")) null else JSONArray(body)
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "GET $path failed: ${e.message}")
+            null
+        }
+    }
+
     private suspend fun pullRemoteUpdates(cfg: SupabaseConfig): PullResult {
         var received = 0
         var conflicts = 0
 
         // Pull members
         try {
-            val url = "${cfg.url}/rest/v1/members?select=*"
+            // Explicit column list: the legacy (potentially large) photo_webp column is never
+            // transferred — photos live in Storage and are downloaded only on demand.
+            val url = "${cfg.url}/rest/v1/members?select=id,qr_code,first_name,last_name,birth_date,phone,group_code,belt_name,status,registration_date,photo_object,notes"
             val request = Request.Builder()
                 .url(url)
                 .addHeader("apikey", cfg.anonKey)
@@ -572,45 +826,41 @@ class SupabaseSyncService(
                             val id = obj.optLong("id", 0L)
                             val qrCode = obj.optString("qr_code", "")
                             if (id > 0 && qrCode.isNotBlank()) {
-                                val existing = memberDao.getMemberByIdDirect(id)
-                                val remoteMember = Member(
-                                    id = id,
-                                    qrCode = qrCode,
-                                    firstName = obj.optString("first_name", ""),
-                                    lastName = obj.optString("last_name", ""),
-                                    birthDate = obj.optString("birth_date", ""),
-                                    phone = obj.optString("phone", ""),
-                                    groupCode = obj.optString("group_code", "U15"),
-                                    beltName = obj.optString("belt_name", "BLANCHE"),
-                                    status = obj.optString("status", "ACTIF"),
-                                    registrationDate = obj.optString("registration_date", "2026-09-01"),
-                                    photoUrl = obj.optString("photo_url", ""),
-                                    notes = obj.optString("notes", "")
-                                )
-                                val remoteWebp = obj.optString("photo_webp", "")
-                                val resolvedRemote = if (remoteWebp.isNotBlank()) {
-                                    val localPath = PhotoCompressor.storeBase64(context, "member_${id}", remoteWebp)
-                                    if (localPath != null) remoteMember.copy(photoUrl = localPath) else remoteMember
-                                } else {
-                                    remoteMember
-                                }
-                                if (existing == null) {
-                                    memberDao.insertMember(resolvedRemote)
-                                    received++
-                                } else if (existing != resolvedRemote) {
-                                    // Conflict resolved with Last-Write-Wins
-                                    memberDao.updateMember(resolvedRemote)
-                                    conflicts++
-                                    auditLogDao.insert(
-                                        SyncAuditLogEntity(
-                                            entityName = "MEMBERS",
-                                            entityId = id.toString(),
-                                            operationType = "CONFLICT_RESOLVED",
-                                            resolvedBy = "TIMESTAMP_LWW",
-                                            details = "Mise à jour membre $id (${resolvedRemote.fullName}) depuis le cloud"
-                                        )
+                                // Local is the source of truth: an existing member is never
+                                // overwritten by the cloud backup. Rows are only restored when a
+                                // device is missing them entirely (fresh install / new tablet).
+                                if (memberDao.getMemberByIdDirect(id) != null) continue
+
+                                var photoUrl = ""
+                                val photoObject = obj.optString("photo_object", "")
+                                if (photoObject.isNotBlank()) {
+                                    val bytes = storage.download(
+                                        cfg,
+                                        SupabaseStorageService.BUCKET_MEMBER_PHOTOS,
+                                        photoObject
                                     )
+                                    if (bytes != null) {
+                                        photoUrl = PhotoCompressor.saveBytes(context, "member_$id", bytes) ?: ""
+                                    }
                                 }
+
+                                memberDao.insertMember(
+                                    Member(
+                                        id = id,
+                                        qrCode = qrCode,
+                                        firstName = obj.optString("first_name", ""),
+                                        lastName = obj.optString("last_name", ""),
+                                        birthDate = obj.optString("birth_date", ""),
+                                        phone = obj.optString("phone", ""),
+                                        groupCode = obj.optString("group_code", "U15"),
+                                        beltName = obj.optString("belt_name", "BLANCHE"),
+                                        status = obj.optString("status", "ACTIF"),
+                                        registrationDate = obj.optString("registration_date", "2026-09-01"),
+                                        photoUrl = photoUrl,
+                                        notes = obj.optString("notes", "")
+                                    )
+                                )
+                                received++
                             }
                         }
                     }
@@ -622,7 +872,7 @@ class SupabaseSyncService(
 
         // Pull coaches
         try {
-            val url = "${cfg.url}/rest/v1/coaches?select=*"
+            val url = "${cfg.url}/rest/v1/coaches?select=id,name,grade,phone,assigned_categories,is_active,sessions_count,photo_object"
             val request = Request.Builder()
                 .url(url)
                 .addHeader("apikey", cfg.anonKey)
@@ -647,36 +897,243 @@ class SupabaseSyncService(
                                 .filter { it.isNotBlank() }
                                 .joinToString(";")
 
-                            val existing = localById[id]
-                            val photoWebp = obj.optString("photo_webp", "")
-                            var photoPath = existing?.photoPath ?: ""
-                            if (photoWebp.isNotBlank()) {
-                                PhotoCompressor.storeBase64(context, "coach_$id", photoWebp)?.let { photoPath = it }
+                            // Local is the source of truth: only restore coaches the tablet
+                            // does not have yet.
+                            if (localById[id] != null) continue
+
+                            var photoPath = ""
+                            val photoObject = obj.optString("photo_object", "")
+                            if (photoObject.isNotBlank()) {
+                                val bytes = storage.download(
+                                    cfg,
+                                    SupabaseStorageService.BUCKET_COACH_PHOTOS,
+                                    photoObject
+                                )
+                                if (bytes != null) {
+                                    photoPath = PhotoCompressor.saveBytes(context, "coach_$id", bytes) ?: ""
+                                }
                             }
 
-                            val entity = CoachEntity(
-                                id = id,
-                                name = obj.optString("name", ""),
-                                grade = obj.optString("grade", ""),
-                                phone = obj.optString("phone", ""),
-                                assignedCategoriesJoined = cats,
-                                isActive = obj.optBoolean("is_active", true),
-                                sessionsCount = obj.optInt("sessions_count", 0),
-                                photoPath = photoPath
+                            clubDao.insertCoach(
+                                CoachEntity(
+                                    id = id,
+                                    name = obj.optString("name", ""),
+                                    grade = obj.optString("grade", ""),
+                                    phone = obj.optString("phone", ""),
+                                    assignedCategoriesJoined = cats,
+                                    isActive = obj.optBoolean("is_active", true),
+                                    sessionsCount = obj.optInt("sessions_count", 0),
+                                    photoPath = photoPath
+                                )
                             )
-                            if (existing == null) {
-                                clubDao.insertCoach(entity)
-                                received++
-                            } else if (existing != entity) {
-                                clubDao.insertCoach(entity)
-                                conflicts++
-                            }
+                            received++
                         }
                     }
                 }
             }
         } catch (e: Exception) {
             Log.w("SupabaseSync", "Error pulling coaches: ${e.message}")
+        }
+
+        // --- Categories (fill-missing only) ---
+        try {
+            getRemoteArray(
+                cfg,
+                "judo_categories?select=id,name,group_code,coach1_name,coach2_name,description,is_active"
+            )?.let { arr ->
+                val localIds = clubDao.getAllCategories().map { it.id }.toHashSet()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optString("id", "")
+                    if (id.isBlank() || id in localIds) continue
+                    clubDao.insertCategory(
+                        CategoryEntity(
+                            id = id,
+                            name = obj.optString("name", ""),
+                            groupCode = obj.optString("group_code", ""),
+                            coach1Name = obj.optString("coach1_name", ""),
+                            coach2Name = obj.optString("coach2_name", ""),
+                            description = obj.optString("description", ""),
+                            isActive = obj.optBoolean("is_active", true)
+                        )
+                    )
+                    received++
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling categories: ${e.message}")
+        }
+
+        // --- Scheduled sessions (fill-missing only) ---
+        try {
+            getRemoteArray(
+                cfg,
+                "scheduled_sessions?select=id,category_id,category_name,group_code,day_of_week_name," +
+                    "date_string,formatted_display_date,start_time,end_time,coach_ids,coach_names," +
+                    "is_recurring_weekly,recurrence_end_date,series_id,notes,status"
+            )?.let { arr ->
+                val localIds = clubDao.getAllScheduledSessions().map { it.id }.toHashSet()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optString("id", "")
+                    if (id.isBlank() || id in localIds) continue
+                    clubDao.insertScheduledSession(
+                        ScheduledSessionEntity(
+                            id = id,
+                            categoryId = obj.optString("category_id", ""),
+                            categoryName = obj.optString("category_name", ""),
+                            groupCode = obj.optString("group_code", ""),
+                            dayOfWeekName = obj.optString("day_of_week_name", ""),
+                            dateString = obj.optString("date_string", ""),
+                            formattedDisplayDate = obj.optString("formatted_display_date", ""),
+                            startTime = obj.optString("start_time", ""),
+                            endTime = obj.optString("end_time", ""),
+                            coachIdsJoined = jsonArrayToJoined(obj.optJSONArray("coach_ids")),
+                            coachNamesJoined = jsonArrayToJoined(obj.optJSONArray("coach_names")),
+                            isRecurringWeekly = obj.optBoolean("is_recurring_weekly", false),
+                            recurrenceEndDate = obj.optString("recurrence_end_date", "").ifBlank { null },
+                            seriesId = obj.optString("series_id", "").ifBlank { null },
+                            notes = obj.optString("notes", ""),
+                            status = obj.optString("status", "SCHEDULED")
+                        )
+                    )
+                    received++
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling scheduled sessions: ${e.message}")
+        }
+
+        // --- Past sessions (fill-missing only) ---
+        try {
+            getRemoteArray(
+                cfg,
+                "past_sessions?select=id,category_id,category_name,group_code,date_string,start_time," +
+                    "end_time,coach1_name,coach1_present,coach2_name,coach2_present,present_count," +
+                    "absent_count,present_member_names,absent_member_names"
+            )?.let { arr ->
+                val localIds = clubDao.getAllPastSessions().map { it.id }.toHashSet()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optString("id", "")
+                    if (id.isBlank() || id in localIds) continue
+                    clubDao.insertPastSession(
+                        PastSessionEntity(
+                            id = id,
+                            categoryId = obj.optString("category_id", ""),
+                            categoryName = obj.optString("category_name", ""),
+                            groupCode = obj.optString("group_code", ""),
+                            dateString = obj.optString("date_string", ""),
+                            startTime = obj.optString("start_time", ""),
+                            endTime = obj.optString("end_time", ""),
+                            coach1Name = obj.optString("coach1_name", ""),
+                            coach1Present = obj.optBoolean("coach1_present", false),
+                            coach2Name = obj.optString("coach2_name", ""),
+                            coach2Present = obj.optBoolean("coach2_present", false),
+                            presentCount = obj.optInt("present_count", 0),
+                            absentCount = obj.optInt("absent_count", 0),
+                            presentMembersJoined = jsonArrayToJoined(obj.optJSONArray("present_member_names")),
+                            absentMembersJoined = jsonArrayToJoined(obj.optJSONArray("absent_member_names"))
+                        )
+                    )
+                    received++
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling past sessions: ${e.message}")
+        }
+
+        // --- Attendances (fill-missing only) ---
+        try {
+            getRemoteArray(
+                cfg,
+                "attendances?select=id,member_id,date_string,time_string,timestamp,check_in_method,device_id"
+            )?.let { arr ->
+                val localIds = attendanceDao.getAllAttendancesDirect().map { it.id }.toHashSet()
+                val toInsert = mutableListOf<Attendance>()
+                for (i in 0 until arr.length()) {
+                    val obj = arr.optJSONObject(i) ?: continue
+                    val id = obj.optLong("id", 0L)
+                    if (id <= 0L || id in localIds) continue
+                    toInsert.add(
+                        Attendance(
+                            id = id,
+                            memberId = obj.optLong("member_id", 0L),
+                            dateString = obj.optString("date_string", ""),
+                            timeString = obj.optString("time_string", ""),
+                            timestamp = obj.optLong("timestamp", 0L),
+                            checkInMethod = obj.optString("check_in_method", "QR_SCAN"),
+                            deviceId = obj.optString("device_id", "")
+                        )
+                    )
+                }
+                if (toInsert.isNotEmpty()) {
+                    attendanceDao.insertAll(toInsert)
+                    received += toInsert.size
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling attendances: ${e.message}")
+        }
+
+        // --- Club settings (fill-missing only: blank local values are completed) ---
+        try {
+            getRemoteArray(cfg, "club_settings?select=*&id=eq.default")?.let { arr ->
+                if (arr.length() > 0) {
+                    val obj = arr.optJSONObject(0)
+                    if (obj != null) {
+                        val editor = appPrefs.edit()
+                        var changed = false
+                        fun fill(key: String, remote: String) {
+                            if (remote.isNotBlank() && (appPrefs.getString(key, "") ?: "").isBlank()) {
+                                editor.putString(key, remote)
+                                changed = true
+                            }
+                        }
+                        fill("club_name", obj.optString("club_name", ""))
+                        fill("club_address", obj.optString("club_address", ""))
+                        fill("club_phone", obj.optString("club_phone", ""))
+                        fill("club_hours", obj.optString("club_hours", ""))
+                        fill("club_season", obj.optString("club_season", ""))
+                        fill("admin_name", obj.optString("admin_name", ""))
+                        fill("admin_email", obj.optString("admin_email", ""))
+                        fill("admin_phone", obj.optString("admin_phone", ""))
+                        fill("admin_role", obj.optString("admin_role", ""))
+                        // The administrator avatar is stored as an object: fetch it only when
+                        // the device has no photo yet.
+                        val adminPhotoObject = obj.optString("admin_photo_object", "")
+                        if (adminPhotoObject.isNotBlank() &&
+                            (appPrefs.getString("admin_photo_uri", "") ?: "").isBlank()
+                        ) {
+                            val bytes = storage.download(
+                                cfg,
+                                SupabaseStorageService.BUCKET_CLUB_ASSETS,
+                                adminPhotoObject
+                            )
+                            if (bytes != null) {
+                                PhotoCompressor.saveBytes(context, "admin_profile", bytes)?.let {
+                                    editor.putString("admin_photo_uri", it)
+                                    changed = true
+                                }
+                            }
+                        }
+                        // Scheduled sessions JSON is only restored when this device has none.
+                        if ((appPrefs.getString("scheduled_sessions_json", "") ?: "").isBlank()) {
+                            val remoteSessions = obj.optJSONArray("scheduled_sessions")
+                            if (remoteSessions != null && remoteSessions.length() > 0) {
+                                editor.putString("scheduled_sessions_json", remoteSessions.toString())
+                                changed = true
+                            }
+                        }
+                        if (changed) {
+                            editor.apply()
+                            received++
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling club settings: ${e.message}")
         }
 
         return PullResult(received, conflicts)
@@ -966,6 +1423,17 @@ class SupabaseSyncService(
         } catch (e: Exception) {
             Result.failure(Exception("Échec de la restauration : ${e.message}"))
         }
+    }
+
+    /** Joins a JSON string array back into the ";"-separated form used by the Room entities. */
+    private fun jsonArrayToJoined(array: JSONArray?): String {
+        if (array == null) return ""
+        val parts = mutableListOf<String>()
+        for (i in 0 until array.length()) {
+            val value = array.optString(i, "")
+            if (value.isNotBlank()) parts.add(value)
+        }
+        return parts.joinToString(";")
     }
 
     private fun getIsoNow(): String {

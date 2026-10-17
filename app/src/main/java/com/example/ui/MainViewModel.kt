@@ -163,6 +163,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .putString("coach_club", profile.clubName)
             .putString("coach_bio", profile.bio)
             .apply()
+        viewModelScope.launch { supabaseSyncService.enqueueClubSettings() }
     }
 
     fun updateCoachPhoto(photoUrl: String) {
@@ -332,18 +333,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Categories Management
+    /**
+     * Local-first persistence for a single category: written to Room (source of truth) and then
+     * queued for the Supabase backup. Mirrors the [persistCoach] pattern.
+     */
+    private fun persistCategory(category: JudoCategory, enqueue: Boolean = true) {
+        viewModelScope.launch {
+            try {
+                database.clubDao().insertCategory(CategoryEntity.fromDomain(category))
+                if (enqueue) supabaseSyncService.enqueueCategory(CategoryEntity.fromDomain(category))
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun loadCategoriesFromDatabase() {
+        viewModelScope.launch {
+            try {
+                val stored = database.clubDao().getAllCategories()
+                if (stored.isNotEmpty()) {
+                    _categories.value = stored.map { it.toDomain() }
+                } else if (_categories.value.isNotEmpty()) {
+                    // First run: persist the default categories so they survive a restart and
+                    // are backed up to the cloud.
+                    val defaults = _categories.value
+                    database.clubDao().insertCategories(defaults.map { CategoryEntity.fromDomain(it) })
+                    defaults.forEach { supabaseSyncService.enqueueCategory(CategoryEntity.fromDomain(it)) }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun addCategory(category: JudoCategory) {
         _categories.value = _categories.value + category
+        persistCategory(category)
     }
 
     fun updateCategory(category: JudoCategory) {
         _categories.value = _categories.value.map { if (it.id == category.id) category else it }
+        persistCategory(category)
     }
 
     fun toggleCategoryActive(categoryId: String) {
         _categories.value = _categories.value.map {
             if (it.id == categoryId) it.copy(isActive = !it.isActive) else it
         }
+        _categories.value.firstOrNull { it.id == categoryId }?.let { persistCategory(it) }
     }
 
     // Coach assignment to categories
@@ -366,6 +402,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else coach
         }
         _coaches.value.filter { it.name.equals(coachName, ignoreCase = true) }.forEach { persistCoach(it) }
+        _categories.value.firstOrNull { it.id == categoryId }?.let { persistCategory(it) }
     }
 
     fun removeCoachFromCategory(categoryId: String, coachName: String) {
@@ -385,6 +422,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else coach
         }
         _coaches.value.filter { it.name.equals(coachName, ignoreCase = true) }.forEach { persistCoach(it) }
+        _categories.value.firstOrNull { it.id == categoryId }?.let { persistCategory(it) }
     }
 
     // Scheduled Training Sessions (Weekly Planning & Calendar)
@@ -589,6 +627,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val json = serializeScheduledSessions(_scheduledSessions.value)
             prefs.edit().putString("scheduled_sessions_json", json).apply()
         } catch (_: Exception) {}
+        mirrorScheduledSessionsToDb()
+    }
+
+    /**
+     * Single choke point for the scheduled sessions: they stay in SharedPreferences (the format
+     * the app reads at start-up) but are also mirrored into Room and queued for the Supabase
+     * backup, so the cloud tables are never left empty.
+     */
+    private fun mirrorScheduledSessionsToDb() {
+        val snapshot = _scheduledSessions.value
+        viewModelScope.launch {
+            try {
+                database.clubDao().deleteAllScheduledSessions()
+                database.clubDao().insertScheduledSessions(snapshot.map { ScheduledSessionEntity.fromDomain(it) })
+                for (session in snapshot) {
+                    supabaseSyncService.enqueueScheduledSession(ScheduledSessionEntity.fromDomain(session))
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     private fun serializeScheduledSessions(sessions: List<ScheduledTrainingSession>): String {
@@ -679,7 +737,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         loadCoachesFromDatabase()
+        loadCategoriesFromDatabase()
+        loadPastSessionsFromDatabase()
+        loadScheduledSessionsFromDatabase()
         startDaily22hSyncChecker()
+    }
+
+    /**
+     * Mirrors the scheduled sessions into Room on start-up when the table is still empty
+     * (first run after this feature was added), then never again: [saveScheduledSessionsToPrefs]
+     * keeps it in sync afterwards.
+     */
+    private fun loadScheduledSessionsFromDatabase() {
+        viewModelScope.launch {
+            try {
+                val stored = database.clubDao().getAllScheduledSessions()
+                if (stored.isEmpty() && _scheduledSessions.value.isNotEmpty()) {
+                    val defaults = _scheduledSessions.value
+                    database.clubDao().insertScheduledSessions(defaults.map { ScheduledSessionEntity.fromDomain(it) })
+                    defaults.forEach { supabaseSyncService.enqueueScheduledSession(ScheduledSessionEntity.fromDomain(it)) }
+                }
+            } catch (_: Exception) {
+            }
+        }
     }
 
     fun addScheduledSession(session: ScheduledTrainingSession, repeatWeeks: Int = 1) {
@@ -896,6 +976,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .putString("club_season", settings.season)
             .putString("club_hours", settings.openingHours)
             .apply()
+        viewModelScope.launch { supabaseSyncService.enqueueClubSettings() }
     }
 
     // Admin Profile Management
@@ -925,6 +1006,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .putString("admin_pin", profile.pinCode)
             .putString("admin_photo_uri", profile.photoUri)
             .apply()
+        viewModelScope.launch { supabaseSyncService.enqueueClubSettings() }
     }
 
     // Admin Notifications
@@ -965,6 +1047,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _notifications.value = _notifications.value.map { it.copy(isRead = true) }
     }
 
+    // Past sessions (training history)
+    /**
+     * Local-first persistence for a single past session: written to Room (source of truth) and
+     * queued for the Supabase backup.
+     */
+    private fun persistPastSession(session: PastTrainingSession) {
+        viewModelScope.launch {
+            try {
+                database.clubDao().insertPastSession(PastSessionEntity.fromDomain(session))
+                supabaseSyncService.enqueuePastSession(PastSessionEntity.fromDomain(session))
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun loadPastSessionsFromDatabase() {
+        viewModelScope.launch {
+            try {
+                val stored = database.clubDao().getAllPastSessions()
+                if (stored.isNotEmpty()) {
+                    _pastSessions.value = stored.map { it.toDomain() }
+                } else if (_pastSessions.value.isNotEmpty()) {
+                    // First run: persist the default history so it survives a restart and is
+                    // backed up to the cloud.
+                    val defaults = _pastSessions.value
+                    database.clubDao().insertPastSessions(defaults.map { PastSessionEntity.fromDomain(it) })
+                    defaults.forEach { supabaseSyncService.enqueuePastSession(PastSessionEntity.fromDomain(it)) }
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     fun correctSessionAttendance(sessionId: String, memberName: String, markAsPresent: Boolean) {
         _pastSessions.value = _pastSessions.value.map { session ->
             if (session.id == sessionId) {
@@ -989,6 +1104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } else session
         }
+        _pastSessions.value.firstOrNull { it.id == sessionId }?.let { persistPastSession(it) }
     }
 
     fun selectCategory(category: JudoCategory?) {
@@ -1038,6 +1154,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         _pastSessions.value = listOf(newPastSession) + _pastSessions.value
         _activeSession.value = null
+        persistPastSession(newPastSession)
     }
 
     val allMembers: StateFlow<List<Member>> = repository.allMembers
