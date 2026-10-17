@@ -8,6 +8,8 @@ import androidx.activity.compose.setContent
 import androidx.compose.ui.platform.LocalContext
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.border
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.BarChart
@@ -53,10 +56,12 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.ui.components.QuitSyncDialog
 import com.example.ui.screens.AdminCloudSyncScreen
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -115,6 +120,7 @@ import androidx.compose.material.icons.filled.Category
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.SportsMartialArts
+import com.example.ui.theme.JudoGoldBright
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.DouchetteReceiver
@@ -524,13 +530,19 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         containerColor = MaterialTheme.colorScheme.surface,
                         header = {
                             Text(
-                                text = "🥋 COACH",
-                                style = MaterialTheme.typography.titleMedium.copy(
-                                    fontWeight = FontWeight.Black,
-                                    color = JudoRed
-                                ),
-                                modifier = Modifier.padding(vertical = 16.dp)
-                            )
+        text = buildAnnotatedString {
+            withStyle(SpanStyle(fontSize = 36.sp)) {
+                append("🥋\n") // Retour à la ligne après l'emoji
+            }
+            append("COACH")
+        },
+        style = MaterialTheme.typography.titleMedium.copy(
+            fontWeight = FontWeight.Black,
+            color = JudoRed
+        ),
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(vertical = 16.dp)
+    )
                         }
                     ) {
                         CoachTab.entries.forEach { tab ->
@@ -705,21 +717,16 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         .testTag("tablet_navigation_rail"),
                     containerColor = MaterialTheme.colorScheme.surface,
                     header = {
-    Text(
-        text = buildAnnotatedString {
-            withStyle(SpanStyle(fontSize = 36.sp)) {
-                append("🥋\n") // Retour à la ligne après l'emoji
-            }
-            append("JUDO")
-        },
-        style = MaterialTheme.typography.titleMedium.copy(
-            fontWeight = FontWeight.Black,
-            color = JudoRed
-        ),
-        textAlign = TextAlign.Center,
-        modifier = Modifier.padding(vertical = 16.dp)
-    )
-}
+                        Image(
+                            painter = painterResource(id = R.drawable.ic_launcher_asset),
+                            contentDescription = "Judo Club Seddouk",
+                            modifier = Modifier
+                                .padding(vertical = 16.dp)
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .border(1.5.dp, JudoGoldBright, CircleShape)
+                        )
+                    }
                 ) {
                     ScreenTab.entries.forEach { tab ->
                         NavigationRailItem(
@@ -745,13 +752,33 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
 
                     // Theme toggle on tablet rail
                     IconButton(
-                        onClick = { viewModel.toggleTheme() },
-                        modifier = Modifier.padding(bottom = 16.dp)
+                        onClick = { viewModel.toggleTheme() }
                     ) {
                         Icon(
                             imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
                             contentDescription = "Changer thème",
                             tint = if (isDarkTheme) Color(0xFFFFD54F) else JudoRed
+                        )
+                    }
+
+                    // Quitter l'espace administrateur : retour à la sélection du rôle / catégorie
+                    IconButton(
+                        onClick = {
+                            selectedMemberId = null
+                            activeStatFilter = null
+                            activeAdminSubScreen = AdminSubScreen.NONE
+                            currentTab = ScreenTab.HOME
+                            viewModel.selectCategory(null)
+                            viewModel.setUserRole(UserRole.COACH)
+                        },
+                        modifier = Modifier
+                            .padding(bottom = 16.dp)
+                            .testTag("admin_rail_quit")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Logout,
+                            contentDescription = "Quitter l'espace administrateur",
+                            tint = JudoRed
                         )
                     }
                 }

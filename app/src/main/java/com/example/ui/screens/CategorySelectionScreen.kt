@@ -6,16 +6,19 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -46,6 +49,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -54,12 +58,18 @@ import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.JudoCategory
 import com.example.ui.theme.JudoGold
+import com.example.ui.theme.JudoGoldBright
+import com.example.ui.theme.JudoInk
 import com.example.ui.theme.JudoRed
-import com.example.ui.theme.JudoRedDark
+import com.example.ui.theme.JudoWarmBackground
 
 /**
  * Welcome / landing screen shown to coaches before a category has been picked.
- * Displays the club branding, the list of training categories and the Admin access gate.
+ *
+ * Premium judo identity: the club banner as a dark hero header (with the emblem and
+ * the dark-mode toggle), a warm off-white canvas with rounded category cards
+ * (pale-red icon chip + gold group badge) and the original Admin access gate / Quit
+ * actions pinned at the bottom.
  */
 @Composable
 fun CategorySelectionScreen(
@@ -72,112 +82,39 @@ fun CategorySelectionScreen(
     modifier: Modifier = Modifier
 ) {
     val activeCategories = categories.filter { it.isActive }
+    val canvasColor = if (isDarkTheme) MaterialTheme.colorScheme.background else JudoWarmBackground
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(canvasColor)
             .statusBarsPadding()
             .navigationBarsPadding()
             .testTag("category_selection_screen")
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // ---- Branding header ----
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(listOf(JudoRed, JudoRedDark))
-                    )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 22.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Spacer(modifier = Modifier.size(40.dp))
-
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Box(
-                                modifier = Modifier
-                                    .size(78.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.12f))
-                                    .border(2.dp, JudoGold, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Image(
-                                    painter = painterResource(id = R.drawable.ic_judo_launcher),
-                                    contentDescription = "Emblème Judo Seddouk",
-                                    contentScale = ContentScale.Crop,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .clip(CircleShape)
-                                )
-                            }
-                        }
-
-                        IconButton(
-                            onClick = onToggleTheme,
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.12f))
-                        ) {
-                            Icon(
-                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                                contentDescription = "Changer le thème",
-                                tint = Color.White
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text(
-                        text = "JUDO CLUB SEDDOUK",
-                        style = MaterialTheme.typography.headlineSmall.copy(
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 1.5.sp
-                        ),
-                        color = Color.White,
-                        textAlign = TextAlign.Center
-                    )
-                    Text(
-                        text = "Dojo Municipal • Tatami Seddouk",
-                        style = MaterialTheme.typography.bodyMedium.copy(
-                            color = JudoGold,
-                            fontWeight = FontWeight.Medium
-                        )
-                    )
-                }
-            }
+            HeroHeader(isDarkTheme = isDarkTheme, onToggleTheme = onToggleTheme)
 
             // ---- Category list ----
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 16.dp)
+                    .padding(start = 16.dp, end = 16.dp, top = 18.dp, bottom = 12.dp)
             ) {
                 Text(
                     text = "Sélectionnez votre catégorie",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                    color = MaterialTheme.colorScheme.onSurface
                 )
+                Spacer(modifier = Modifier.height(2.dp))
                 Text(
                     text = "Espace entraîneur • pointage des présences",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 if (activeCategories.isEmpty()) {
                     Box(
@@ -188,83 +125,144 @@ fun CategorySelectionScreen(
                     ) {
                         Text(
                             text = "Aucune catégorie active n'est configurée.\nAccédez à l'espace administrateur pour en créer.",
-                            style = MaterialTheme.typography.bodyMedium.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
                         )
                     }
                 } else {
-                    LazyVerticalGrid(
-                        columns = GridCells.Adaptive(minSize = 160.dp),
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        items(activeCategories, key = { it.id }) { category ->
-                            CategoryCard(
-                                category = category,
-                                onClick = { onSelectCategory(category) }
-                            )
+                    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                        // 3 columns on tablets, 2 on phones (matches the reference grid).
+                        val columns = if (maxWidth >= 520.dp) 3 else 2
+                        LazyVerticalGrid(
+                            columns = GridCells.Fixed(columns),
+                            modifier = Modifier.fillMaxSize(),
+                            contentPadding = PaddingValues(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            items(activeCategories, key = { it.id }) { category ->
+                                CategoryCard(
+                                    category = category,
+                                    onClick = { onSelectCategory(category) }
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // ---- Bottom actions ----
-            Surface(
-                color = MaterialTheme.colorScheme.surface,
-                tonalElevation = 4.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Button(
-                        onClick = onAdminAccess,
-                        shape = RoundedCornerShape(14.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = JudoRed,
-                            contentColor = Color.White
-                        ),
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(50.dp)
-                            .testTag("category_admin_access_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.AdminPanelSettings,
-                            contentDescription = null,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.size(8.dp))
-                        Text(
-                            text = "Administrateur",
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
+            BottomActions(onAdminAccess = onAdminAccess, onQuitApp = onQuitApp)
+        }
+    }
+}
 
-                    TextButton(
-                        onClick = onQuitApp,
-                        modifier = Modifier.testTag("category_quit_btn")
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.Logout,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+/**
+ * Dark hero header built on the club banner artwork: the emblem is shown prominently
+ * near the top and a moon icon toggles the theme.
+ */
+@Composable
+private fun HeroHeader(
+    isDarkTheme: Boolean,
+    onToggleTheme: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            // Match the banner artwork's own ratio so the whole poster is shown and the
+            // hero is noticeably taller than a content-height header.
+            .aspectRatio(1671f / 941f)
+            .background(JudoInk)
+    ) {
+        // Provided club banner, pasted as the hero background (sized to the header).
+        Image(
+            painter = painterResource(id = R.drawable.ic_home_banner),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.matchParentSize()
+        )
+
+        // Scrim so the overlaid title stays perfectly readable on the artwork.
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0.0f to JudoInk.copy(alpha = 0.55f),
+                            0.45f to JudoInk.copy(alpha = 0.30f),
+                            1.0f to JudoInk.copy(alpha = 0.88f)
                         )
-                        Spacer(modifier = Modifier.size(6.dp))
-                        Text(
-                            text = "Quitter",
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    )
+                )
+        )
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 20.dp, vertical = 22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // Prominent club emblem (provided logo asset, used as-is).
+                Box(
+                    modifier = Modifier
+                        .size(84.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.30f))
+                        .border(2.dp, JudoGoldBright.copy(alpha = 0.85f), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Image(
+                        painter = painterResource(id = R.drawable.ic_launcher_asset),
+                        contentDescription = "Emblème Judo Club Seddouk",
+                        contentScale = ContentScale.Fit,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(8.dp)
+                    )
+                }
+
+                IconButton(
+                    onClick = onToggleTheme,
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(Color.Black.copy(alpha = 0.35f))
+                ) {
+                    Icon(
+                        imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                        contentDescription = "Changer le thème",
+                        tint = Color.White
+                    )
                 }
             }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Text(
+                text = "JUDO CLUB SEDDOUK",
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.5.sp
+                ),
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(
+                text = "Dojo Municipal • Tatami Seddouk",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                color = JudoGoldBright,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
@@ -278,10 +276,13 @@ private fun CategoryCard(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = CardDefaults.outlinedCardBorder(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         modifier = Modifier
             .fillMaxWidth()
             .height(150.dp)
-            .clickable { onClick() }
+            .clip(RoundedCornerShape(18.dp))
+            .clickable(role = Role.Button, onClick = onClick)
+            .testTag("category_card_${category.id}")
     ) {
         Column(
             modifier = Modifier
@@ -289,18 +290,19 @@ private fun CategoryCard(
                 .padding(14.dp),
             verticalArrangement = Arrangement.SpaceBetween
         ) {
+            // Pale-red chip with the red judo icon.
             Box(
                 modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(JudoRed.copy(alpha = 0.12f)),
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(13.dp))
+                    .background(JudoRed.copy(alpha = 0.10f)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.SportsMartialArts,
                     contentDescription = null,
                     tint = JudoRed,
-                    modifier = Modifier.size(24.dp)
+                    modifier = Modifier.size(26.dp)
                 )
             }
 
@@ -308,31 +310,93 @@ private fun CategoryCard(
                 Text(
                     text = category.name,
                     style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-                    maxLines = 1,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
-                Spacer(modifier = Modifier.height(2.dp))
+                Spacer(modifier = Modifier.height(5.dp))
+                // Small gold group badge.
                 Surface(
                     shape = RoundedCornerShape(6.dp),
-                    color = JudoGold.copy(alpha = 0.18f)
+                    color = JudoGoldBright
                 ) {
                     Text(
                         text = category.groupCode,
                         style = MaterialTheme.typography.labelSmall.copy(
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
+                            letterSpacing = 0.5.sp
                         ),
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        color = Color(0xFF3A2A00),
+                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                     )
                 }
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(5.dp))
                 Text(
                     text = category.coach1Name,
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun BottomActions(
+    onAdminAccess: () -> Unit,
+    onQuitApp: () -> Unit
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        tonalElevation = 4.dp,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Button(
+                onClick = onAdminAccess,
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = JudoRed,
+                    contentColor = Color.White
+                ),
+                modifier = Modifier
+                    .weight(1f)
+                    .height(50.dp)
+                    .testTag("category_admin_access_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.AdminPanelSettings,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.size(8.dp))
+                Text(
+                    text = "Administrateur",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+
+            TextButton(
+                onClick = onQuitApp,
+                modifier = Modifier.testTag("category_quit_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.Logout,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.size(6.dp))
+                Text(
+                    text = "Quitter",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

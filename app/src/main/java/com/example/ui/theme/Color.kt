@@ -22,6 +22,14 @@ val JudoBlue = Color(0xFF283593)
 val JudoSilver = Color(0xFFB0BEC5)
 val JudoBronze = Color(0xFFCD7F32)
 
+// Premium judo identity palette (used by the home / category selection screen).
+// Black hero, vivid red accents, gold highlights and a warm off-white canvas.
+val JudoInk = Color(0xFF0B0B0D)
+val JudoInkSoft = Color(0xFF17171C)
+val JudoRedVivid = Color(0xFFE10600)
+val JudoGoldBright = Color(0xFFFDC928)
+val JudoWarmBackground = Color(0xFFFAF7F2)
+
 // Accessible brand accents (theme-aware helpers)
 // Amber #FFB300 is too light for text/icons on white, so the light theme uses a darker gold.
 val JudoGoldDark = Color(0xFFB45309)
