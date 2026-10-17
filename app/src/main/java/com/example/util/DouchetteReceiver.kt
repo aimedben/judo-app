@@ -172,17 +172,22 @@ class DouchetteReceiver(
 
     companion object {
         /**
-         * Fallback used when the scanner sends no suffix at all. It is deliberately
-         * generous: a slow Bluetooth scanner can space its characters further apart than
-         * a short timeout, and finishing mid-read is worse than waiting a moment.
+         * Fallback used when the scanner sends no suffix at all: the read is declared over
+         * once the character stream goes quiet for this long. Every character resets it, so
+         * it only needs to exceed the gap the scanner leaves between two characters
+         * (an HID scanner emits a key every few tens of milliseconds), not the whole read.
+         * Kept short so a suffix-less scanner does not make the coach wait after scanning.
          */
-        const val DEFAULT_IDLE_TIMEOUT_MS: Long = 1200L
+        const val DEFAULT_IDLE_TIMEOUT_MS: Long = 400L
 
         /**
          * Grace period granted after a suffix before the read is declared over, so the
          * line breaks of a multi-line payload are not mistaken for the end of the read.
+         * A scanner transmits those interior line breaks back to back (single-digit
+         * milliseconds apart), so the grace only has to bridge that burst while staying
+         * imperceptible for a normal Enter-terminated scan.
          */
-        const val DEFAULT_TERMINATOR_GRACE_MS: Long = 180L
+        const val DEFAULT_TERMINATOR_GRACE_MS: Long = 70L
 
         const val DEFAULT_DUPLICATE_WINDOW_MS: Long = 700L
         const val MIN_CODE_LENGTH: Int = 3

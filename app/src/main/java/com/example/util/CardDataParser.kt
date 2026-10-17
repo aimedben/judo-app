@@ -295,7 +295,7 @@ object CardDataParser {
      * fully concatenated payloads.
      */
     private val CARD_LABEL_REGEX = Regex(
-        "(?i:(n°\\s*(?:de\\s*)?(?:licence|carte|cin)?|no\\s*(?:de\\s*)?(?:licence|carte)?|" +
+        "(?i:((?<![A-Za-zÀ-ÿ])n\\s*|n°\\s*(?:de\\s*)?(?:licence|carte|cin)?|no\\s*(?:de\\s*)?(?:licence|carte)?|" +
             "num(?:ero|éro)?\\s*(?:de\\s*)?(?:licence|carte)?|licence|lic|" +
             "adherents?|adhérents?|judoka|membre|" +
             "pr[ée]noms?|noms?|nom\\s*(?:et|&)\\s*pr[ée]noms?|" +

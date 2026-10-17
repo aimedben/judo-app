@@ -684,7 +684,7 @@ private fun CardExtractionPreviewAndEdit(
                     season = season.trim().ifBlank { initialInfo.season },
                     group = if (birthDate.isNotBlank()) JudoGroup.fromBirthDate(birthDate.trim()) else initialInfo.group,
                     qrCode = if (cardNumber.isNotBlank()) "JCS-$cardNumber"
-                        else initialInfo.qrCode.ifBlank { "JCS-${System.currentTimeMillis().toString().takeLast(5)}" }
+                        else initialInfo.qrCode
                 )
                 onApply(finalInfo)
             },

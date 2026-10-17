@@ -211,4 +211,42 @@ class DouchetteReceiverTest {
     h.flush()
     assertEquals(listOf("JCS-2"), h.delivered)
   }
+
+  // --- Production timings -------------------------------------------------------------------
+  // The end-of-read wait is the only latency the app itself adds between a scan and the pointage,
+  // so it must stay short enough to feel instant while still coalescing a multi-line payload.
+
+  @Test
+  fun defaultConfigurationUsesTheSnappyDelays() {
+    val scheduler = FakeScheduler()
+    val receiver = DouchetteReceiver(scheduler = scheduler, onCode = {})
+
+    receiver.feedChar('J')
+    assertEquals(
+      "characters must use the idle fallback",
+      DouchetteReceiver.DEFAULT_IDLE_TIMEOUT_MS,
+      scheduler.lastDelay
+    )
+
+    receiver.feedTerminator()
+    assertEquals(
+      "the end-of-read suffix must use the short grace",
+      DouchetteReceiver.DEFAULT_TERMINATOR_GRACE_MS,
+      scheduler.lastDelay
+    )
+  }
+
+  @Test
+  fun productionTimingsFeelInstantButStillBridgeAMultiLineBurst() {
+    val grace = DouchetteReceiver.DEFAULT_TERMINATOR_GRACE_MS
+    val idle = DouchetteReceiver.DEFAULT_IDLE_TIMEOUT_MS
+
+    // A suffix-terminated read (the common case) must be declared over almost immediately.
+    assertTrue("terminator grace is too slow: ${grace}ms", grace <= 100L)
+    // A scanner that sends no suffix must not make the coach wait either.
+    assertTrue("idle fallback is too slow: ${idle}ms", idle <= 500L)
+    // The grace only has to bridge the few-millisecond gap between the lines of one payload.
+    assertTrue("terminator grace is too tight: ${grace}ms", grace >= 30L)
+    assertTrue("idle fallback must not be shorter than the grace", idle >= grace)
+  }
 }
