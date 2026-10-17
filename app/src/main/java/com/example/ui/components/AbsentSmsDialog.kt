@@ -1,10 +1,15 @@
 package com.example.ui.components
 
+import android.Manifest
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -28,6 +34,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -37,6 +45,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,6 +53,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Member
@@ -51,6 +61,8 @@ import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.ui.theme.JudoWarning
 import com.example.util.AbsentSmsNotifier
+import com.example.util.SimSmsSender
+import kotlinx.coroutines.launch
 
 /**
  * Builds the native SMS intent for one guardian.
@@ -76,7 +88,16 @@ internal object SmsIntentFactory {
         }
 }
 
-private enum class SmsStage { RECAP, REVIEW }
+private enum class SmsStage { RECAP, REVIEW, DIRECT }
+
+/** One live dispatch shown in the direct-send stage, its status set through the SENT broadcast. */
+data class DirectSmsLine(
+    val key: String,
+    val label: String,
+    val number: String,
+    var state: String,
+    var isError: Boolean
+)
 
 /**
  * "Envoyer les SMS aux parents des absents" — recap + per-guardian preparation.
@@ -145,6 +166,74 @@ fun AbsentSmsDialog(
         )
     }
 
+    // ---- Envoi direct par la SIM (sans quitter l'application) ----------------------------
+    val simCapable = remember { SimSmsSender.isDeviceSmsCapable(context) }
+    val directLines = remember { mutableStateListOf<DirectSmsLine>() }
+    var directDestinations by remember { mutableStateOf("") }
+    var directMessage by remember { mutableStateOf("Test d'envoi direct SMS depuis l'app Judo Seddouk.") }
+    var awaitingDirectAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val directScope = rememberCoroutineScope()
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val pending = awaitingDirectAction
+        awaitingDirectAction = null
+        if (granted) {
+            pending?.invoke()
+        } else {
+            errorMessage = "Autorisation SMS refusée : l'envoi direct n'est pas possible."
+            Toast.makeText(context, "Autorisation SMS refusée", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun ensurePermissionThen(action: () -> Unit) {
+        if (SimSmsSender.hasSendSmsPermission(context)) {
+            action()
+        } else {
+            awaitingDirectAction = action
+            permissionLauncher.launch(Manifest.permission.SEND_SMS)
+        }
+    }
+
+    fun updateLine(key: String, state: String, isError: Boolean) {
+        val index = directLines.indexOfFirst { it.key == key }
+        if (index >= 0) {
+            directLines[index] = directLines[index].copy(state = state, isError = isError)
+        }
+    }
+
+    /** Registers the SENT receiver and dispatches the message, updating the line's status. */
+    fun launchDirectSend(label: String, number: String, body: String, key: String) {
+        val action = SimSmsSender.SENT_ACTION_PREFIX + key
+        val receiver = SimSmsSender.registerSentReceiver(context, action) { result ->
+            when (result) {
+                is SimSmsSender.SentResult.Sent -> updateLine(key, "Envoyé ✓", false)
+                is SimSmsSender.SentResult.Error -> {
+                    val cause = when (result.resultCode) {
+                        android.telephony.SmsManager.RESULT_ERROR_NO_SERVICE -> "Pas de réseau"
+                        android.telephony.SmsManager.RESULT_ERROR_RADIO_OFF -> "Radio désactivée (SIM absente ?)"
+                        android.telephony.SmsManager.RESULT_ERROR_NULL_PDU -> "PDU invalide"
+                        else -> "Échec" + if (result.errorCode != 0) " (code ${result.errorCode})" else ""
+                    }
+                    updateLine(key, cause, true)
+                }
+            }
+            // Un seul verdict suffit : le moteur désinscrit le receiver à ce moment.
+            true
+        }
+        updateLine(key, "…", false)
+        directScope.launch {
+            if (!SimSmsSender.dispatch(context, number, body, action)) {
+                updateLine(key, "Cet appareil ne gère pas la téléphonie (SMS)", true)
+                try {
+                    context.unregisterReceiver(receiver)
+                } catch (_: IllegalArgumentException) {
+                }
+            }
+        }
+    }
+
     AlertDialog(
         onDismissRequest = onDismiss,
         modifier = Modifier
@@ -187,21 +276,88 @@ fun AbsentSmsDialog(
                     errorMessage = errorMessage,
                     messageFor = messageFor
                 )
+                SmsStage.DIRECT -> SmsDirectContent(
+                    plan = plan,
+                    destinations = directDestinations,
+                    onDestinationsChange = { directDestinations = it },
+                    message = directMessage,
+                    onMessageChange = { directMessage = it },
+                    lines = directLines,
+                    simCapable = simCapable,
+                    errorMessage = errorMessage,
+                    onManualSend = { destinationText, messageText ->
+                        errorMessage = null
+                        val parsed = SimSmsSender.parseDestinations(destinationText)
+                        val invalidTokens = destinationText.split(",", ";", "\n")
+                            .map { it.trim() }
+                            .filter { it.isNotEmpty() }
+                            .filter { token ->
+                                AbsentSmsNotifier.normalizePhone(token)?.let { it in parsed } != true
+                            }
+                        when {
+                            parsed.isEmpty() ->
+                                errorMessage = "Aucun numéro de destinataire valide n'a été reconnu."
+                            messageText.isBlank() ->
+                                errorMessage = "Le message est vide : rien à envoyer."
+                        }
+                        if (parsed.isNotEmpty() && messageText.isNotBlank()) {
+                            ensurePermissionThen {
+                                parsed.forEach { number ->
+                                    val key = "$number-${System.nanoTime()}"
+                                    directLines.add(
+                                        DirectSmsLine(
+                                            key = key,
+                                            label = "Destinataire",
+                                            number = number,
+                                            state = "…", isError = false
+                                        )
+                                    )
+                                    launchDirectSend("Destinataire", number, messageText, key)
+                                }
+                            }
+                        }
+                        // Surface les numéros ingérables hors des journaux (aucune donnée
+                        // personnelle ne part en logcat) : un toast suffit côté coach.
+                        if (invalidTokens.isNotEmpty()) {
+                            Toast.makeText(
+                                context,
+                                "Numéros ignorés : " + invalidTokens.joinToString(", ") +
+                                    " (format attendu : 0X XX XX XX XX)",
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                    }
+                )
             }
         },
         confirmButton = {
             when (stage) {
-                SmsStage.RECAP -> Button(
-                    onClick = {
-                        errorMessage = null
-                        currentIndex = 0
-                        stage = SmsStage.REVIEW
-                    },
-                    enabled = plan.hasRecipients && !noSmsAppAvailable,
-                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
-                    modifier = Modifier.testTag("absent_sms_prepare_btn")
+                SmsStage.RECAP -> Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Préparer les SMS (${plan.messageCount})")
+                    TextButton(
+                        onClick = {
+                            errorMessage = null
+                            stage = SmsStage.DIRECT
+                        },
+                        enabled = simCapable,
+                        modifier = Modifier.testTag("absent_sms_direct_btn")
+                    ) {
+                        Text("Envoi direct (SIM)", color = if (simCapable) JudoRed else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Button(
+                        onClick = {
+                            errorMessage = null
+                            currentIndex = 0
+                            stage = SmsStage.REVIEW
+                        },
+                        enabled = plan.hasRecipients && !noSmsAppAvailable,
+                        colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
+                        modifier = Modifier.testTag("absent_sms_prepare_btn")
+                    ) {
+                        Text("Préparer les SMS (${plan.messageCount})")
+                    }
                 }
 
                 SmsStage.REVIEW -> {
@@ -227,6 +383,46 @@ fun AbsentSmsDialog(
                         }
                     }
                 }
+
+                SmsStage.DIRECT -> Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = {
+                            ensurePermissionThen {
+                                // L'appareil ne quitte pas l'application : le SMS part direct
+                                // par la SIM, avec le message personnalisé de chaque absent.
+                                plan.recipients.forEach { recipient ->
+                                    val key = "${recipient.memberId}-${System.nanoTime()}"
+                                    directLines.add(
+                                        DirectSmsLine(
+                                            key = key,
+                                            label = recipient.memberName,
+                                            number = recipient.normalizedPhone,
+                                            state = "…", isError = false
+                                        )
+                                    )
+                                    launchDirectSend(
+                                        recipient.memberName,
+                                        recipient.normalizedPhone,
+                                        messageFor(recipient),
+                                        key
+                                    )
+                                }
+                            }
+                        },
+                        enabled = plan.hasRecipients,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = JudoRed),
+                        modifier = Modifier.testTag("absent_sms_direct_send_absents_btn")
+                    ) {
+                        Text("Envoyer aux absents (${plan.messageCount})")
+                    }
+                    Button(
+                        onClick = { onDismiss() },
+                        colors = ButtonDefaults.buttonColors(containerColor = JudoSuccess),
+                        modifier = Modifier.testTag("absent_sms_direct_finish_btn")
+                    ) {
+                        Text("Terminer")
+                    }
+                }
             }
         },
         dismissButton = {
@@ -241,6 +437,13 @@ fun AbsentSmsDialog(
                 SmsStage.REVIEW -> TextButton(
                     onClick = { stage = SmsStage.RECAP },
                     modifier = Modifier.testTag("absent_sms_back_btn")
+                ) {
+                    Text("Retour", color = JudoRed)
+                }
+
+                SmsStage.DIRECT -> TextButton(
+                    onClick = { stage = SmsStage.RECAP },
+                    modifier = Modifier.testTag("absent_sms_direct_back_btn")
                 ) {
                     Text("Retour", color = JudoRed)
                 }
@@ -365,6 +568,145 @@ private fun SmsRecapContent(
                 color = JudoWarning,
                 testTag = "absent_sms_shared_numbers"
             )
+        }
+    }
+}
+
+@Composable
+private fun SmsDirectContent(
+    plan: AbsentSmsNotifier.SmsPlan,
+    destinations: String,
+    onDestinationsChange: (String) -> Unit,
+    message: String,
+    onMessageChange: (String) -> Unit,
+    lines: List<DirectSmsLine>,
+    simCapable: Boolean,
+    errorMessage: String?,
+    onManualSend: (String, String) -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 460.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text(
+            text = "Envoi direct par la carte SIM — sans quitter l'application",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+            modifier = Modifier.testTag("absent_sms_direct_title")
+        )
+
+        if (!simCapable) {
+            InlineBanner(
+                text = "Cet appareil ne gère pas la téléphonie (SMS) : l'envoi direct est impossible ici.",
+                color = JudoWarning,
+                testTag = "absent_sms_direct_no_telephony"
+            )
+        } else {
+            InlineBanner(
+                text = "Le message part immédiatement par la SIM de l'appareil. Le statut " +
+                    "affiché est confirmé par le système (réseau radio), pas par une garantie de livraison.",
+                color = JudoWarning,
+                testTag = "absent_sms_direct_disclaimer"
+            )
+        }
+
+        if (plan.hasRecipients) {
+            Text(
+                text = "Pré-remplir avec les absents de la séance",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+            )
+            Text(
+                text = "Destinataires des absents : " +
+                    plan.recipients.joinToString(", ") { it.normalizedPhone },
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            )
+        }
+
+        OutlinedTextField(
+            value = destinations,
+            onValueChange = onDestinationsChange,
+            label = { Text("Destinataires (numéros séparés par une virgule)") },
+            placeholder = { Text("ex : 0783033616, 0794335010") },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("absent_sms_direct_destinations")
+        )
+
+        OutlinedTextField(
+            value = message,
+            onValueChange = onMessageChange,
+            label = { Text("Message") },
+            minLines = 2,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("absent_sms_direct_message")
+        )
+
+        Button(
+            onClick = { onManualSend(destinations, message) },
+            enabled = simCapable && message.isNotBlank(),
+            colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("absent_sms_direct_manual_send_btn")
+        ) {
+            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.size(6.dp))
+            Text("Envoyer maintenant (SIM)")
+        }
+
+        if (lines.isNotEmpty()) {
+            Text(
+                text = "Statut des envois",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold)
+            )
+            lines.forEach { line ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${line.label} • ${line.number}",
+                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium)
+                    )
+                    Text(
+                        text = line.state,
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = if (line.isError) MaterialTheme.colorScheme.error else JudoSuccess,
+                            fontWeight = FontWeight.Bold
+                        )
+                    )
+                }
+            }
+        }
+
+        errorMessage?.let { text ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.testTag("absent_sms_direct_error")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp)
+                )
+                Text(
+                    text = text,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = MaterialTheme.colorScheme.error,
+                        fontWeight = FontWeight.Bold
+                    )
+                )
+            }
         }
     }
 }
