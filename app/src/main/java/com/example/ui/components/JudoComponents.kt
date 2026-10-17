@@ -42,6 +42,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -118,7 +119,9 @@ fun JudokaAvatar(
     belt: Belt,
     modifier: Modifier = Modifier,
     photoUrl: String = "",
-    sizeDp: Int = 48
+    sizeDp: Int = 48,
+    borderColor: Color? = null,
+    borderWidth: Dp = 2.dp
 ) {
     val initials = name.split(" ")
         .filter { it.isNotBlank() }
@@ -132,7 +135,7 @@ fun JudokaAvatar(
             .size(sizeDp.dp)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceVariant)
-            .border(2.dp, belt.primaryColor, CircleShape)
+            .border(borderWidth, borderColor ?: belt.primaryColor, CircleShape)
     ) {
         if (photoUrl.isNotBlank()) {
             AsyncImage(

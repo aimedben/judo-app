@@ -2,7 +2,6 @@ package com.example.ui.screens
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -44,7 +43,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
@@ -158,8 +156,9 @@ fun CategorySelectionScreen(
 }
 
 /**
- * Dark hero header built on the club banner artwork: the emblem is shown prominently
- * near the top and a moon icon toggles the theme.
+ * Dark hero header built on the club banner artwork. The poster already contains the
+ * emblem, the club name and the venue, so nothing is overlaid on it except the theme
+ * toggle, kept at the top-right corner.
  */
 @Composable
 private fun HeroHeader(
@@ -175,6 +174,8 @@ private fun HeroHeader(
             .background(JudoInk)
     ) {
         // Provided club banner, pasted as the hero background (sized to the header).
+        // The artwork already carries the emblem, the club name and the venue, so it is
+        // shown unmasked; the only overlay is the theme toggle.
         Image(
             painter = painterResource(id = R.drawable.ic_home_banner),
             contentDescription = null,
@@ -182,87 +183,26 @@ private fun HeroHeader(
             modifier = Modifier.matchParentSize()
         )
 
-        // Scrim so the overlaid title stays perfectly readable on the artwork.
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .background(
-                    Brush.verticalGradient(
-                        colorStops = arrayOf(
-                            0.0f to JudoInk.copy(alpha = 0.55f),
-                            0.45f to JudoInk.copy(alpha = 0.30f),
-                            1.0f to JudoInk.copy(alpha = 0.88f)
-                        )
-                    )
-                )
-        )
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(horizontal = 20.dp, vertical = 22.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            horizontalAlignment = Alignment.End,
+            verticalArrangement = Arrangement.Top
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+            IconButton(
+                onClick = onToggleTheme,
+                modifier = Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.35f))
             ) {
-                // Prominent club emblem (provided logo asset, used as-is).
-                Box(
-                    modifier = Modifier
-                        .size(84.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.30f))
-                        .border(2.dp, JudoGoldBright.copy(alpha = 0.85f), CircleShape),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Image(
-                        painter = painterResource(id = R.drawable.ic_launcher_asset),
-                        contentDescription = "Emblème Judo Club Seddouk",
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(8.dp)
-                    )
-                }
-
-                IconButton(
-                    onClick = onToggleTheme,
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(CircleShape)
-                        .background(Color.Black.copy(alpha = 0.35f))
-                ) {
-                    Icon(
-                        imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                        contentDescription = "Changer le thème",
-                        tint = Color.White
-                    )
-                }
+                Icon(
+                    imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                    contentDescription = "Changer le thème",
+                    tint = Color.White
+                )
             }
-
-            Spacer(modifier = Modifier.height(14.dp))
-
-            Text(
-                text = "JUDO CLUB SEDDOUK",
-                style = MaterialTheme.typography.headlineSmall.copy(
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 1.5.sp
-                ),
-                color = Color.White,
-                textAlign = TextAlign.Center,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(modifier = Modifier.height(2.dp))
-            Text(
-                text = "Dojo Municipal • Tatami Seddouk",
-                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
-                color = JudoGoldBright,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }
