@@ -1,5 +1,6 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material3.AlertDialog
@@ -67,10 +69,13 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.model.ActiveTrainingSession
 import com.example.data.model.JudoCategory
+import com.example.data.model.Member
 import com.example.data.model.PastTrainingSession
+import com.example.ui.components.AbsentSmsDialog
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.AbsentSmsNotifier
 
 import com.example.data.model.CoachUser
 import com.example.data.model.RecurrenceScope
@@ -85,6 +90,8 @@ fun AdminSessionsScreen(
     activeSession: ActiveTrainingSession?,
     categories: List<JudoCategory>,
     coaches: List<CoachUser> = emptyList(),
+    members: List<Member> = emptyList(),
+    clubName: String = "",
     onAddScheduledSession: (ScheduledTrainingSession, Int) -> Unit = { _, _ -> },
     onUpdateScheduledSession: (ScheduledTrainingSession) -> Unit = {},
     onDuplicateScheduledSession: (ScheduledTrainingSession) -> Unit = {},
@@ -429,9 +436,25 @@ fun AdminSessionsScreen(
     // Detail Dialog
     if (selectedSessionDetail != null) {
         val session = selectedSessionDetail!!
-        var detailTab by remember { mutableStateOf(0) } // 0: Présents, 1: Absents
+        var detailTab by remember { mutableStateOf(0) }
+        var showAbsentSmsDialog by remember { mutableStateOf(false) }
+
+        val sessionRoster = remember(members, session) {
+            AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
+        }
+        val absentMemberObjects = remember(sessionRoster, session) {
+            AbsentSmsNotifier.resolveAbsentMembers(session.absentMemberNames, sessionRoster)
+        }
 
         Dialog(onDismissRequest = { selectedSessionDetail = null }) {
+            if (showAbsentSmsDialog) {
+                AbsentSmsDialog(
+                    absentMembers = absentMemberObjects,
+                    sessionDate = session.dateString,
+                    clubName = clubName,
+                    onDismiss = { showAbsentSmsDialog = false }
+                )
+            }
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -557,6 +580,28 @@ fun AdminSessionsScreen(
                                     }
                                 }
                             }
+                        }
+                    }
+
+                    if (detailTab == 1 && absentMemberObjects.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = { showAbsentSmsDialog = true },
+                            border = BorderStroke(1.5.dp, JudoRed),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = JudoRed),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_absent_sms_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Message,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "SMS aux parents des absents (${absentMemberObjects.size})",
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
 

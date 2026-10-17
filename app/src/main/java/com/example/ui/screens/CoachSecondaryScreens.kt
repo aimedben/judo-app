@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Message
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Phone
@@ -62,11 +63,13 @@ import com.example.data.model.AttendanceWithMember
 import com.example.data.model.JudoCategory
 import com.example.data.model.Member
 import com.example.data.model.PastTrainingSession
+import com.example.ui.components.AbsentSmsDialog
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoNavy
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.AbsentSmsNotifier
 
 /**
  * Screen: Athlètes de la catégorie du coach
@@ -403,9 +406,12 @@ fun CoachAthletesScreen(
 fun CoachHistoryScreen(
     category: JudoCategory,
     pastSessions: List<PastTrainingSession>,
+    members: List<Member> = emptyList(),
+    clubName: String = "",
     modifier: Modifier = Modifier
 ) {
     var selectedSessionForDetail by remember { mutableStateOf<PastTrainingSession?>(null) }
+    var showAbsentSmsDialog by remember { mutableStateOf(false) }
 
     val categorySessions = remember(pastSessions, category) {
         pastSessions.filter { it.categoryId.equals(category.id, ignoreCase = true) || it.groupCode.equals(category.groupCode, ignoreCase = true) }
@@ -611,6 +617,22 @@ fun CoachHistoryScreen(
 
     // Modal with full details of presents & absents
     selectedSessionForDetail?.let { session ->
+        val sessionRoster = remember(members, session) {
+            AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
+        }
+        val absentMemberObjects = remember(sessionRoster, session) {
+            AbsentSmsNotifier.resolveAbsentMembers(session.absentMemberNames, sessionRoster)
+        }
+
+        if (showAbsentSmsDialog) {
+            AbsentSmsDialog(
+                absentMembers = absentMemberObjects,
+                sessionDate = session.dateString,
+                clubName = clubName,
+                onDismiss = { showAbsentSmsDialog = false }
+            )
+        }
+
         AlertDialog(
             onDismissRequest = { selectedSessionForDetail = null },
             title = {
@@ -663,8 +685,29 @@ fun CoachHistoryScreen(
                 }
             },
             confirmButton = {
-                TextButton(onClick = { selectedSessionForDetail = null }) {
-                    Text("Fermer", color = JudoRed)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (absentMemberObjects.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = { showAbsentSmsDialog = true },
+                            border = BorderStroke(1.5.dp, JudoRed),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = JudoRed),
+                            modifier = Modifier.testTag("coach_history_absent_sms_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Message,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("SMS absents (${absentMemberObjects.size})")
+                        }
+                    }
+                    TextButton(onClick = { selectedSessionForDetail = null }) {
+                        Text("Fermer", color = JudoRed)
+                    }
                 }
             }
         )

@@ -8,6 +8,19 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!--
+        Package visibility (Android 11+, targetSdk 30+) so that resolveActivity() can detect the
+        user's messaging application before we launch the prefilled SMS (ACTION_SENDTO / smsto:).
+        No SEND_SMS permission is requested: the message is handed over to the user's SMS app,
+        which is the only one allowed to actually send it.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.SENDTO" />
+            <data android:scheme="smsto" />
+        </intent>
+    </queries>
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

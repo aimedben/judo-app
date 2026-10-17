@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.QrCodeScanner
@@ -82,6 +83,7 @@ import com.example.data.model.AttendanceWithMember
 import com.example.data.model.Belt
 import com.example.data.model.CoachScanFeedback
 import com.example.data.model.Member
+import com.example.ui.components.AbsentSmsDialog
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
@@ -271,35 +273,59 @@ fun CoachSessionPointageScreen(
                 ) {
                     when (scanFeedback) {
                         is CoachScanFeedback.Success -> {
-                            Box(
-                                modifier = Modifier
-                                    .size(54.dp)
-                                    .clip(CircleShape)
-                                    .background(JudoSuccess),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Validé",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(32.dp)
+                            // Confirmation window: the athlete's profile photo circled in green.
+                            Box {
+                                JudokaAvatar(
+                                    name = scanFeedback.member.fullName,
+                                    belt = scanFeedback.member.belt,
+                                    photoUrl = scanFeedback.member.photoUrl,
+                                    sizeDp = 58,
+                                    borderColor = JudoSuccess,
+                                    borderWidth = 3.dp
                                 )
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(JudoSuccess),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Validé",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
                         is CoachScanFeedback.AlreadyChecked -> {
-                            Box(
-                                modifier = Modifier
-                                    .size(54.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF1976D2)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Check,
-                                    contentDescription = "Déjà présent",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(30.dp)
+                            // Same confirmation, blue ring: the athlete was already pointed.
+                            Box {
+                                JudokaAvatar(
+                                    name = scanFeedback.member.fullName,
+                                    belt = scanFeedback.member.belt,
+                                    photoUrl = scanFeedback.member.photoUrl,
+                                    sizeDp = 58,
+                                    borderColor = Color(0xFF1976D2),
+                                    borderWidth = 3.dp
                                 )
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomEnd)
+                                        .size(20.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF1976D2)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = "Déjà présent",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                }
                             }
                         }
                         is CoachScanFeedback.Invalid -> {
@@ -776,7 +802,8 @@ fun CoachSessionSummaryScreen(
     categoryMembers: List<Member>,
     sessionAttendances: List<AttendanceWithMember>,
     onValidateAndSave: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    clubName: String = ""
 ) {
     val totalCount = categoryMembers.size
     val presentCount = sessionAttendances.size
@@ -785,6 +812,7 @@ fun CoachSessionSummaryScreen(
 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var endTimeString by remember { mutableStateOf("") }
+    var showSmsDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         val sdf = SimpleDateFormat("HH:mm", Locale.FRENCH)
@@ -799,8 +827,22 @@ fun CoachSessionSummaryScreen(
         sessionAttendances.map { it.fullName }
     }
 
-    val absentMembers = remember(categoryMembers, presentMemberIds) {
-        categoryMembers.filter { it.id !in presentMemberIds }.map { it.fullName }
+    // Absent athletes = members of THIS session's category who were not scanned as present.
+    val absentMemberObjects = remember(categoryMembers, presentMemberIds) {
+        categoryMembers.filter { it.id !in presentMemberIds }
+    }
+
+    val absentMembers = remember(absentMemberObjects) {
+        absentMemberObjects.map { it.fullName }
+    }
+
+    if (showSmsDialog) {
+        AbsentSmsDialog(
+            absentMembers = absentMemberObjects,
+            sessionDate = session.startDate,
+            clubName = clubName,
+            onDismiss = { showSmsDialog = false }
+        )
     }
 
     val presentCoaches = remember(session) {
@@ -1009,26 +1051,55 @@ fun CoachSessionSummaryScreen(
                 }
             }
 
-            // Bottom validate and save button
-            Button(
-                onClick = { onValidateAndSave(endTimeString) },
-                shape = RoundedCornerShape(18.dp),
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = JudoRed,
-                    contentColor = Color.White
-                ),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(60.dp)
-                    .testTag("coach_validate_summary_btn")
+            // Bottom actions: prepare the SMS to the absent athletes' guardians, then validate.
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
-                Text(
-                    text = "Valider et enregistrer",
-                    style = MaterialTheme.typography.titleMedium.copy(
-                        fontWeight = FontWeight.Black,
-                        fontSize = 18.sp
+                if (absentCount > 0) {
+                    OutlinedButton(
+                        onClick = { showSmsDialog = true },
+                        shape = RoundedCornerShape(18.dp),
+                        border = BorderStroke(1.5.dp, JudoRed),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = JudoRed),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(54.dp)
+                            .testTag("coach_absent_sms_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Message,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "SMS aux parents des absents ($absentCount)",
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = { onValidateAndSave(endTimeString) },
+                    shape = RoundedCornerShape(18.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = JudoRed,
+                        contentColor = Color.White
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(60.dp)
+                        .testTag("coach_validate_summary_btn")
+                ) {
+                    Text(
+                        text = "Valider et enregistrer",
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            fontSize = 18.sp
+                        )
                     )
-                )
+                }
             }
         }
     }
