@@ -124,6 +124,7 @@ import com.example.ui.theme.JudoGoldBright
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.MyApplicationTheme
 import com.example.util.DouchetteReceiver
+import com.example.util.SessionScope
 
 enum class ScreenTab(val label: String, val icon: ImageVector) {
     HOME("Accueil", Icons.Default.Dashboard),
@@ -151,7 +152,9 @@ class MainActivity : ComponentActivity() {
         // Only capture hardware keys while a training session is running. Soft-keyboard
         // input goes through the InputConnection (not dispatchKeyEvent), so normal typing
         // in dialogs and text fields is never affected.
-        if (viewModel.activeSession.value == null) {
+        // La douchette n'est active que si la séance en cours appartient à la catégorie affichée :
+        // une séance laissée en arrière-plan dans une autre catégorie ne doit pas capturer le clavier.
+        if (!SessionScope.isActive(viewModel.activeSession.value, viewModel.selectedCategory.value)) {
             douchette.reset()
             return super.dispatchKeyEvent(event)
         }
@@ -252,6 +255,10 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     val userRole by viewModel.userRole.collectAsState()
     val selectedCategory by viewModel.selectedCategory.collectAsState()
     val activeSession by viewModel.activeSession.collectAsState()
+    // Une séance en cours n'appartient qu'à la catégorie pour laquelle elle a été démarrée.
+    // Toute séance d'une autre catégorie est obsolète et ne doit jamais s'afficher, sinon toutes
+    // les cartes de catégorie semblaient ouvrir le pointage de la même séance.
+    val sessionForSelectedCategory = SessionScope.forCategory(activeSession, selectedCategory)
     val coachScanFeedback by viewModel.coachScanFeedback.collectAsState()
     val pastSessions by viewModel.pastSessions.collectAsState()
 
@@ -297,12 +304,12 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         else allMembers.filter { it.groupCode.equals(selectedCategory!!.groupCode, ignoreCase = true) }
     }
 
-    val sessionAttendances = remember(todayAttendance, selectedCategory, activeSession) {
+    val sessionAttendances = remember(todayAttendance, selectedCategory, sessionForSelectedCategory) {
         val base = if (selectedCategory == null) todayAttendance
         else todayAttendance.filter { it.groupCode.equals(selectedCategory!!.groupCode, ignoreCase = true) }
         // A new session must start with an empty pointage: only check-ins recorded
         // at/after the session start count as present for THIS session.
-        val startTs = activeSession?.startTimestamp
+        val startTs = sessionForSelectedCategory?.startTimestamp
         if (startTs == null) base else base.filter { it.timestamp >= startTs }
     }
 
@@ -333,7 +340,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
             BackHandler {
                 currentCoachTab = CoachTab.SESSION
             }
-        } else if (activeSession == null) {
+        } else if (sessionForSelectedCategory == null) {
             BackHandler {
                 viewModel.selectCategory(null)
             }
@@ -391,6 +398,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         CategorySelectionScreen(
             categories = categories,
             onSelectCategory = { category ->
+                // Une séance en cours n'appartient qu'à la catégorie pour laquelle elle a été
+                // démarrée. On la conserve (le coach peut la reprendre en revenant sur sa
+                // catégorie) mais elle ne s'affiche jamais dans une autre catégorie.
                 viewModel.selectCategory(category)
                 currentCoachTab = CoachTab.SESSION
             },
@@ -422,9 +432,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     // 2. Coach Flow with selected category & dedicated Coach Navbar
     if (userRole == UserRole.COACH && selectedCategory != null) {
         // Dedicated Full-Screen Scanner Page: occupies entire app surface without navbar, navigation rail, stats, or menus
-        if (activeSession != null && isCoachCameraScannerOpen) {
+        if (sessionForSelectedCategory != null && isCoachCameraScannerOpen) {
             CoachDedicatedScannerScreen(
-                session = activeSession!!,
+                session = sessionForSelectedCategory!!,
                 sessionAttendances = sessionAttendances,
                 totalCategoryCount = categoryMembers.size,
                 scanFeedback = coachScanFeedback,
@@ -439,15 +449,16 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         fun CoachScreenBody() {
             when (currentCoachTab) {
                 CoachTab.SESSION -> {
-                    if (isSessionSummaryShown && activeSession != null) {
+                    if (isSessionSummaryShown && sessionForSelectedCategory != null) {
                         // Screen 4: Fin de séance - Récapitulatif
                         CoachSessionSummaryScreen(
-                            session = activeSession!!,
+                            session = sessionForSelectedCategory!!,
                             categoryMembers = categoryMembers,
                             sessionAttendances = sessionAttendances,
+                            clubName = clubSettings.clubName,
                             onValidateAndSave = { endTime: String ->
                                 viewModel.saveFinishedSession(
-                                    session = activeSession!!,
+                                    session = sessionForSelectedCategory!!,
                                     endTime = endTime,
                                     categoryMembers = categoryMembers,
                                     presentAttendances = sessionAttendances
@@ -455,10 +466,10 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                                 isSessionSummaryShown = false
                             }
                         )
-                    } else if (activeSession != null) {
+                    } else if (sessionForSelectedCategory != null) {
                         // Screen 3: Pointage pendant entraînement (Statistiques de séance)
                         CoachSessionPointageScreen(
-                            session = activeSession!!,
+                            session = sessionForSelectedCategory!!,
                             categoryMembers = categoryMembers,
                             sessionAttendances = sessionAttendances,
                             scanFeedback = coachScanFeedback,
@@ -500,7 +511,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                 CoachTab.HISTORY -> {
                     CoachHistoryScreen(
                         category = selectedCategory!!,
-                        pastSessions = pastSessions
+                        pastSessions = pastSessions,
+                        members = allMembers,
+                        clubName = clubSettings.clubName
                     )
                 }
                 CoachTab.PROFILE -> {
@@ -594,6 +607,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                                 isPreparingSession = false
                                 isSessionSummaryShown = false
                                 currentCoachTab = CoachTab.SESSION
+                                // La séance en cours est conservée (elle ne peut plus s'afficher
+                                // que dans sa propre catégorie) : revenir sur la même catégorie
+                                // permet de la reprendre sans perdre le pointage déjà effectué.
                                 viewModel.selectCategory(null)
                             },
                             modifier = Modifier
@@ -1371,6 +1387,8 @@ private fun AppScreenContent(
                 activeSession = activeSession,
                 categories = categories,
                 coaches = coaches,
+                members = allMembers,
+                clubName = clubSettings.clubName,
                 onAddScheduledSession = onAddScheduledSession,
                 onUpdateScheduledSession = onUpdateScheduledSession,
                 onDuplicateScheduledSession = onDuplicateScheduledSession,
