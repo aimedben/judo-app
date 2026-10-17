@@ -63,6 +63,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +71,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -87,6 +89,32 @@ import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.util.CardDataParser
 import com.example.util.ExtractedMemberInfo
+import com.example.util.PhotoCompressor
+import kotlinx.coroutines.launch
+
+/**
+ * Converts a picked member photo (temporary content:// URI) into a small WebP file
+ * stored in the app internal storage so it survives restarts and can be pushed to
+ * Supabase. Non-picker values (already a file path, or empty) are returned as-is.
+ */
+private suspend fun resolveMemberPhoto(
+    context: android.content.Context,
+    rawUrl: String,
+    fallbackKey: String
+): String {
+    if (rawUrl.isBlank()) return ""
+    if (!rawUrl.startsWith("content:")) return rawUrl
+    return try {
+        val bytes = PhotoCompressor.uriToWebp(context, android.net.Uri.parse(rawUrl))
+        if (bytes != null) {
+            PhotoCompressor.saveBytes(context, "member_$fallbackKey", bytes) ?: rawUrl
+        } else {
+            rawUrl
+        }
+    } catch (_: Exception) {
+        rawUrl
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -161,6 +189,9 @@ fun AddEditMemberDialog(
             photoUrl = uri.toString()
         }
     }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     fun applyExtracted(info: ExtractedMemberInfo) {
         if (info.firstName.isNotBlank()) firstName = info.firstName
@@ -906,33 +937,37 @@ fun AddEditMemberDialog(
                             val cleanBirthDate = birthDate.trim()
                             val cleanPhone = phone.trim()
                             val cleanQr = qrCode.trim().ifBlank { "JCS-${System.currentTimeMillis().toString().takeLast(4)}" }
+                            val photoKey = initialMember?.id?.takeIf { it > 0 }?.toString() ?: cleanQr
 
-                            val toSave = initialMember?.copy(
-                                firstName = firstName.trim(),
-                                lastName = lastName.trim(),
-                                birthDate = cleanBirthDate,
-                                phone = cleanPhone,
-                                groupCode = selectedGroup.code,
-                                beltName = selectedBelt.name,
-                                qrCode = cleanQr,
-                                status = status,
-                                photoUrl = photoUrl.trim(),
-                                notes = notes.trim()
-                            ) ?: Member(
-                                firstName = firstName.trim(),
-                                lastName = lastName.trim(),
-                                birthDate = cleanBirthDate,
-                                phone = cleanPhone,
-                                groupCode = selectedGroup.code,
-                                beltName = selectedBelt.name,
-                                qrCode = cleanQr,
-                                status = status,
-                                registrationDate = "2026-09-01",
-                                photoUrl = photoUrl.trim(),
-                                notes = notes.trim()
-                            )
-                            onSave(toSave)
-                            onDismiss()
+                            scope.launch {
+                                val resolvedPhoto = resolveMemberPhoto(context, photoUrl.trim(), photoKey)
+                                val toSave = initialMember?.copy(
+                                    firstName = firstName.trim(),
+                                    lastName = lastName.trim(),
+                                    birthDate = cleanBirthDate,
+                                    phone = cleanPhone,
+                                    groupCode = selectedGroup.code,
+                                    beltName = selectedBelt.name,
+                                    qrCode = cleanQr,
+                                    status = status,
+                                    photoUrl = resolvedPhoto,
+                                    notes = notes.trim()
+                                ) ?: Member(
+                                    firstName = firstName.trim(),
+                                    lastName = lastName.trim(),
+                                    birthDate = cleanBirthDate,
+                                    phone = cleanPhone,
+                                    groupCode = selectedGroup.code,
+                                    beltName = selectedBelt.name,
+                                    qrCode = cleanQr,
+                                    status = status,
+                                    registrationDate = "2026-09-01",
+                                    photoUrl = resolvedPhoto,
+                                    notes = notes.trim()
+                                )
+                                onSave(toSave)
+                                onDismiss()
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
                         shape = RoundedCornerShape(12.dp),

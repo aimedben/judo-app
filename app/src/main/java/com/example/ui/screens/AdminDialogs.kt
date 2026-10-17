@@ -75,10 +75,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -93,6 +95,8 @@ import com.example.data.model.NotificationType
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.PhotoCompressor
+import kotlinx.coroutines.launch
 
 @Composable
 fun NotificationsDialog(
@@ -597,6 +601,18 @@ fun AddEditCoachDialog(
     var assignedCategories by remember {
         mutableStateOf(initialCoach?.assignedCategories?.toSet() ?: emptySet())
     }
+    var photoPath by remember { mutableStateOf(initialCoach?.photoPath ?: "") }
+    var pendingPhotoUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val coachId = remember { initialCoach?.id ?: java.util.UUID.randomUUID().toString() }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) pendingPhotoUri = uri
+    }
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -628,6 +644,83 @@ fun AddEditCoachDialog(
                     )
                     IconButton(onClick = onDismiss) {
                         Icon(Icons.Default.Close, contentDescription = "Fermer")
+                    }
+                }
+
+                // Coach profile photo (WebP, stored locally + synced to Supabase)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
+                    val previewModel = pendingPhotoUri ?: photoPath.takeIf { it.isNotBlank() }
+                    Box(
+                        modifier = Modifier
+                            .size(84.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .border(2.dp, JudoGold, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (previewModel != null) {
+                            AsyncImage(
+                                model = previewModel,
+                                contentDescription = "Photo du coach",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .size(84.dp)
+                                    .clip(CircleShape)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = Icons.Default.Person,
+                                contentDescription = "Photo du coach",
+                                tint = JudoGold,
+                                modifier = Modifier.size(44.dp)
+                            )
+                        }
+                    }
+
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                photoPickerLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                )
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("coach_pick_photo_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CameraAlt,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (previewModel == null) "Ajouter une photo" else "Changer la photo",
+                                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                        if (previewModel != null) {
+                            TextButton(
+                                onClick = {
+                                    pendingPhotoUri = null
+                                    photoPath = ""
+                                },
+                                colors = ButtonDefaults.textButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Supprimer la photo")
+                            }
+                        }
                     }
                 }
 
@@ -731,18 +824,34 @@ fun AddEditCoachDialog(
                     Button(
                         onClick = {
                             if (name.isNotBlank()) {
-                                onSave(
+                                val buildCoach = { resolvedPhoto: String ->
                                     CoachUser(
-                                        id = initialCoach?.id ?: java.util.UUID.randomUUID().toString(),
+                                        id = coachId,
                                         name = name.trim(),
                                         grade = grade.trim(),
                                         phone = phone.trim(),
                                         assignedCategories = assignedCategories.toList(),
                                         isActive = isActive,
-                                        sessionsCount = initialCoach?.sessionsCount ?: 0
+                                        sessionsCount = initialCoach?.sessionsCount ?: 0,
+                                        photoPath = resolvedPhoto
                                     )
-                                )
-                                onDismiss()
+                                }
+                                val uri = pendingPhotoUri
+                                if (uri != null) {
+                                    scope.launch {
+                                        val bytes = PhotoCompressor.uriToWebp(context, uri)
+                                        val saved = if (bytes != null) {
+                                            PhotoCompressor.saveBytes(context, "coach_$coachId", bytes)
+                                        } else {
+                                            photoPath
+                                        }
+                                        onSave(buildCoach(saved ?: ""))
+                                        onDismiss()
+                                    }
+                                } else {
+                                    onSave(buildCoach(photoPath))
+                                    onDismiss()
+                                }
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = JudoRed)

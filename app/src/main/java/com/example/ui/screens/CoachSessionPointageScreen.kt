@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,6 +42,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.StopCircle
@@ -92,6 +94,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.ActiveTrainingSession
 import com.example.data.model.AttendanceWithMember
+import com.example.data.model.Belt
 import com.example.data.model.CoachScanFeedback
 import com.example.data.model.Member
 import com.example.ui.components.JudokaAvatar
@@ -135,6 +138,20 @@ fun CoachSessionPointageScreen(
     val attendanceRate = if (totalCount > 0) ((presentCount.toDouble() / totalCount.toDouble()) * 100).toInt() else 0
 
     var isManualCheckInDialogOpen by remember { mutableStateOf(false) }
+    var statDetailMode by remember { mutableStateOf<StatDetailMode?>(null) }
+
+    // Hidden input dedicated to USB/Bluetooth barcode scanners ("douchette").
+    val douchetteFocusRequester = remember { FocusRequester() }
+    var douchetteBuffer by remember { mutableStateOf("") }
+
+    LaunchedEffect(isManualCheckInDialogOpen) {
+        if (!isManualCheckInDialogOpen && session.isExternalScannerMode) {
+            try {
+                douchetteFocusRequester.requestFocus()
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     // Auto-return to "Prêt à scanner" after 1-second feedback display
     LaunchedEffect(scanFeedback) {
@@ -164,6 +181,68 @@ fun CoachSessionPointageScreen(
             .testTag("coach_pointage_screen"),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        // Hidden field capturing hardware barcode scanner input (douchette).
+        if (session.isExternalScannerMode) {
+            BasicTextField(
+                value = douchetteBuffer,
+                onValueChange = { newValue ->
+                    if (newValue.contains('\n') || newValue.contains('\r')) {
+                        val code = newValue.replace("\n", "").replace("\r", "").trim()
+                        if (code.isNotBlank()) {
+                            onQrScanned(code)
+                        }
+                        douchetteBuffer = ""
+                    } else {
+                        // Only append if buffer is small (avoid piling up)
+                        if (newValue.length <= 50) {
+                            douchetteBuffer = newValue
+                        } else {
+                            // If too long, treat as complete
+                            val code = newValue.trim()
+                            if (code.isNotBlank()) onQrScanned(code)
+                            douchetteBuffer = ""
+                        }
+                    }
+                },
+                singleLine = true,
+                textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(
+                    onDone = {
+                        if (douchetteBuffer.isNotBlank()) {
+                            onQrScanned(douchetteBuffer.trim())
+                            douchetteBuffer = ""
+                        }
+                    }
+                ),
+                modifier = Modifier
+                    .size(1.dp)
+                    .alpha(0f)
+                    .focusRequester(douchetteFocusRequester)
+                    .onFocusChanged { focusState ->
+                        if (!focusState.isFocused && !isManualCheckInDialogOpen) {
+                            try {
+                                douchetteFocusRequester.requestFocus()
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                    .onPreviewKeyEvent { event ->
+                        if (event.type == KeyEventType.KeyDown &&
+                            (event.key == Key.Enter || event.key == Key.NumPadEnter)
+                        ) {
+                            if (douchetteBuffer.isNotBlank()) {
+                                onQrScanned(douchetteBuffer.trim())
+                                douchetteBuffer = ""
+                            }
+                            true
+                        } else {
+                            false
+                        }
+                    }
+            )
+        }
+
         // Top Header: Category & Start Time
         Card(
             shape = RoundedCornerShape(16.dp),
@@ -221,7 +300,7 @@ fun CoachSessionPointageScreen(
             }
         }
 
-        // Essential Stats: Présents | Absents | Taux
+        // Essential Stats: Présents | Absents | Taux (clickables → liste des athlètes)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -230,19 +309,28 @@ fun CoachSessionPointageScreen(
                 title = "Présents",
                 value = "$presentCount",
                 color = JudoSuccess,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("coach_stat_present"),
+                onClick = { statDetailMode = StatDetailMode.PRESENT }
             )
             StatPill(
                 title = "Absents",
                 value = "$absentCount",
                 color = MaterialTheme.colorScheme.error,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("coach_stat_absent"),
+                onClick = { statDetailMode = StatDetailMode.ABSENT }
             )
             StatPill(
                 title = "Taux",
                 value = "$attendanceRate%",
                 color = JudoRed,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("coach_stat_rate"),
+                onClick = { statDetailMode = StatDetailMode.ALL }
             )
         }
 
@@ -453,7 +541,7 @@ fun CoachSessionPointageScreen(
                             }
                             null -> {
                                 Text(
-                                    text = "Prêt à scanner",
+                                    text = if (session.isExternalScannerMode) "Douchette prête" else "Prêt à scanner",
                                     style = MaterialTheme.typography.titleLarge.copy(
                                         fontWeight = FontWeight.Black,
                                         letterSpacing = 0.5.sp
@@ -461,7 +549,11 @@ fun CoachSessionPointageScreen(
                                     color = MaterialTheme.colorScheme.onBackground
                                 )
                                 Text(
-                                    text = "Présentez le QR code de l’athlète devant la douchette",
+                                    text = if (session.isExternalScannerMode) {
+                                        "Scannez le QR code de l’athlète avec la douchette HID (Bluetooth ou USB)"
+                                    } else {
+                                        "Présentez le QR code de l’athlète devant la caméra"
+                                    },
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     ),
@@ -496,13 +588,13 @@ fun CoachSessionPointageScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Icon(
-                        imageVector = Icons.Default.QrCodeScanner,
+                        imageVector = Icons.Default.PhotoCamera,
                         contentDescription = null,
                         tint = Color.White,
                         modifier = Modifier.size(20.dp)
                     )
                     Text(
-                        text = "Scanner les présences",
+                        text = "Caméra (option)",
                         style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.Bold
                         )
@@ -754,6 +846,15 @@ fun CoachSessionPointageScreen(
                     Text("Annuler", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+        )
+    }
+
+    if (statDetailMode != null) {
+        StatAthletesDialog(
+            mode = statDetailMode!!,
+            present = sessionAttendances,
+            absent = categoryMembers.filter { it.id !in presentMemberIds },
+            onDismiss = { statDetailMode = null }
         )
     }
 }
@@ -1114,13 +1215,16 @@ private fun StatPill(
     title: String,
     value: String,
     color: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onClick: (() -> Unit)? = null
 ) {
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
         border = BorderStroke(1.dp, color.copy(alpha = 0.35f)),
-        modifier = modifier
+        modifier = modifier.then(
+            if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
+        )
     ) {
         Column(
             modifier = Modifier
@@ -1140,6 +1244,134 @@ private fun StatPill(
                 style = MaterialTheme.typography.labelSmall.copy(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            )
+        }
+    }
+}
+
+private enum class StatDetailMode { PRESENT, ABSENT, ALL }
+
+@Composable
+private fun StatAthletesDialog(
+    mode: StatDetailMode,
+    present: List<AttendanceWithMember>,
+    absent: List<Member>,
+    onDismiss: () -> Unit
+) {
+    val title = when (mode) {
+        StatDetailMode.PRESENT -> "Présents (${present.size})"
+        StatDetailMode.ABSENT -> "Absents (${absent.size})"
+        StatDetailMode.ALL -> "Athlètes (${present.size + absent.size})"
+    }
+    val isEmpty = when (mode) {
+        StatDetailMode.PRESENT -> present.isEmpty()
+        StatDetailMode.ABSENT -> absent.isEmpty()
+        StatDetailMode.ALL -> present.isEmpty() && absent.isEmpty()
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black)
+            )
+        },
+        text = {
+            if (isEmpty) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "Aucun athlète à afficher",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (mode != StatDetailMode.ABSENT) {
+                        items(present, key = { "present_${it.attendanceId}" }) { attendance ->
+                            AthleteStatRow(
+                                name = attendance.fullName,
+                                belt = attendance.belt,
+                                photoUrl = attendance.photoUrl,
+                                subtitle = "Présent • ${attendance.timeString}",
+                                present = true
+                            )
+                        }
+                    }
+                    if (mode != StatDetailMode.PRESENT) {
+                        items(absent, key = { "absent_${it.id}" }) { member ->
+                            AthleteStatRow(
+                                name = member.fullName,
+                                belt = member.belt,
+                                photoUrl = member.photoUrl,
+                                subtitle = member.group.label,
+                                present = false
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Fermer") }
+        }
+    )
+}
+
+@Composable
+private fun AthleteStatRow(
+    name: String,
+    belt: Belt,
+    photoUrl: String,
+    subtitle: String,
+    present: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        JudokaAvatar(
+            name = name,
+            belt = belt,
+            photoUrl = photoUrl,
+            sizeDp = 38
+        )
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            )
+        }
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (present) JudoSuccess.copy(alpha = 0.15f) else MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+        ) {
+            Text(
+                text = if (present) "Présent ✓" else "Absent",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = if (present) JudoSuccess else MaterialTheme.colorScheme.error,
+                    fontWeight = FontWeight.Bold
+                ),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
             )
         }
     }

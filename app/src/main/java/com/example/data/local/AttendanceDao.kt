@@ -58,6 +58,14 @@ interface AttendanceDao {
     @Query("SELECT * FROM attendance WHERE memberId = :memberId AND dateString = :dateString LIMIT 1")
     suspend fun findTodayAttendance(memberId: Long, dateString: String): Attendance?
 
+    /**
+     * Session-scoped duplicate lookup: an athlete already pointed in the CURRENT
+     * session has a record on [dateString] with a timestamp >= [sinceTimestamp].
+     * A new session (higher start timestamp) therefore starts with an empty pointage.
+     */
+    @Query("SELECT * FROM attendance WHERE memberId = :memberId AND dateString = :dateString AND timestamp >= :sinceTimestamp ORDER BY timestamp DESC LIMIT 1")
+    suspend fun findAttendanceSince(memberId: Long, dateString: String, sinceTimestamp: Long): Attendance?
+
     @Query("SELECT * FROM attendance WHERE memberId = :memberId ORDER BY timestamp DESC")
     fun getAttendanceForMember(memberId: Long): Flow<List<Attendance>>
 

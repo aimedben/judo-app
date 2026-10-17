@@ -14,6 +14,7 @@ import com.example.data.local.sync.SyncQueueEntity
 import com.example.data.local.sync.SyncStatus
 import com.example.data.model.Attendance
 import com.example.data.model.Member
+import com.example.util.PhotoCompressor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -178,6 +179,7 @@ class SupabaseSyncService(
             put("status", member.status)
             put("registration_date", member.registrationDate)
             put("photo_url", member.photoUrl)
+            put("photo_webp", PhotoCompressor.readBase64(member.photoUrl) ?: JSONObject.NULL)
             put("notes", member.notes)
             put("updated_at", getIsoNow())
         }
@@ -249,6 +251,7 @@ class SupabaseSyncService(
             put("assigned_categories", categoriesArray)
             put("is_active", coach.isActive)
             put("sessions_count", coach.sessionsCount)
+            put("photo_webp", PhotoCompressor.readBase64(coach.photoPath) ?: JSONObject.NULL)
             put("updated_at", getIsoNow())
         }
         syncQueueDao.enqueue(
@@ -257,6 +260,18 @@ class SupabaseSyncService(
                 entityId = coach.id,
                 operation = operation,
                 payloadJson = json.toString()
+            )
+        )
+        triggerBackgroundAutoSync()
+    }
+
+    suspend fun enqueueCoachDelete(coachId: String) = withContext(Dispatchers.IO) {
+        syncQueueDao.enqueue(
+            SyncQueueEntity(
+                entityType = "COACHES",
+                entityId = coachId,
+                operation = "DELETE",
+                payloadJson = "{}"
             )
         )
         triggerBackgroundAutoSync()
@@ -572,12 +587,19 @@ class SupabaseSyncService(
                                     photoUrl = obj.optString("photo_url", ""),
                                     notes = obj.optString("notes", "")
                                 )
+                                val remoteWebp = obj.optString("photo_webp", "")
+                                val resolvedRemote = if (remoteWebp.isNotBlank()) {
+                                    val localPath = PhotoCompressor.storeBase64(context, "member_${id}", remoteWebp)
+                                    if (localPath != null) remoteMember.copy(photoUrl = localPath) else remoteMember
+                                } else {
+                                    remoteMember
+                                }
                                 if (existing == null) {
-                                    memberDao.insertMember(remoteMember)
+                                    memberDao.insertMember(resolvedRemote)
                                     received++
-                                } else if (existing != remoteMember) {
+                                } else if (existing != resolvedRemote) {
                                     // Conflict resolved with Last-Write-Wins
-                                    memberDao.updateMember(remoteMember)
+                                    memberDao.updateMember(resolvedRemote)
                                     conflicts++
                                     auditLogDao.insert(
                                         SyncAuditLogEntity(
@@ -585,7 +607,7 @@ class SupabaseSyncService(
                                             entityId = id.toString(),
                                             operationType = "CONFLICT_RESOLVED",
                                             resolvedBy = "TIMESTAMP_LWW",
-                                            details = "Mise à jour membre $id (${remoteMember.fullName}) depuis le cloud"
+                                            details = "Mise à jour membre $id (${resolvedRemote.fullName}) depuis le cloud"
                                         )
                                     )
                                 }
@@ -596,6 +618,65 @@ class SupabaseSyncService(
             }
         } catch (e: Exception) {
             Log.w("SupabaseSync", "Error pulling members: ${e.message}")
+        }
+
+        // Pull coaches
+        try {
+            val url = "${cfg.url}/rest/v1/coaches?select=*"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", cfg.anonKey)
+                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+                .get()
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyString = response.body?.string() ?: ""
+                    if (bodyString.isNotBlank() && bodyString.startsWith("[")) {
+                        val arr = JSONArray(bodyString)
+                        val localById = clubDao.getAllCoaches().associateBy { it.id }
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.optJSONObject(i) ?: continue
+                            val id = obj.optString("id", "")
+                            if (id.isBlank()) continue
+
+                            val catsArray = obj.optJSONArray("assigned_categories") ?: JSONArray()
+                            val cats = (0 until catsArray.length())
+                                .mapNotNull { catsArray.optString(it) }
+                                .filter { it.isNotBlank() }
+                                .joinToString(";")
+
+                            val existing = localById[id]
+                            val photoWebp = obj.optString("photo_webp", "")
+                            var photoPath = existing?.photoPath ?: ""
+                            if (photoWebp.isNotBlank()) {
+                                PhotoCompressor.storeBase64(context, "coach_$id", photoWebp)?.let { photoPath = it }
+                            }
+
+                            val entity = CoachEntity(
+                                id = id,
+                                name = obj.optString("name", ""),
+                                grade = obj.optString("grade", ""),
+                                phone = obj.optString("phone", ""),
+                                assignedCategoriesJoined = cats,
+                                isActive = obj.optBoolean("is_active", true),
+                                sessionsCount = obj.optInt("sessions_count", 0),
+                                photoPath = photoPath
+                            )
+                            if (existing == null) {
+                                clubDao.insertCoach(entity)
+                                received++
+                            } else if (existing != entity) {
+                                clubDao.insertCoach(entity)
+                                conflicts++
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling coaches: ${e.message}")
         }
 
         return PullResult(received, conflicts)

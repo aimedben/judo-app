@@ -48,12 +48,14 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -63,6 +65,8 @@ import coil.compose.AsyncImage
 import com.example.data.model.CoachProfile
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
+import com.example.util.PhotoCompressor
+import kotlinx.coroutines.launch
 
 @Composable
 fun CoachProfileDialog(
@@ -85,6 +89,9 @@ fun CoachProfileDialog(
             photoUrl = uri.toString()
         }
     }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -328,7 +335,7 @@ fun CoachProfileDialog(
 
                     Button(
                         onClick = {
-                            val updated = coachProfile.copy(
+                            val base = coachProfile.copy(
                                 name = name.trim().ifBlank { "Sensei Ahmed BOURENANE" },
                                 title = title.trim(),
                                 danGrade = danGrade.trim().ifBlank { "Ceinture Noire" },
@@ -337,8 +344,22 @@ fun CoachProfileDialog(
                                 clubName = clubName.trim().ifBlank { "JUDO CLUB SEDDOUK" },
                                 bio = bio.trim()
                             )
-                            onSave(updated)
-                            onDismiss()
+                            val raw = photoUrl.trim()
+                            if (raw.startsWith("content:")) {
+                                scope.launch {
+                                    val bytes = PhotoCompressor.uriToWebp(context, Uri.parse(raw))
+                                    val saved = if (bytes != null) {
+                                        PhotoCompressor.saveBytes(context, "coach_profile", bytes)
+                                    } else {
+                                        raw
+                                    }
+                                    onSave(base.copy(photoUrl = saved ?: raw))
+                                    onDismiss()
+                                }
+                            } else {
+                                onSave(base)
+                                onDismiss()
+                            }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
                         shape = RoundedCornerShape(12.dp),

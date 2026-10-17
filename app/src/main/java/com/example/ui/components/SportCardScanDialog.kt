@@ -1,6 +1,8 @@
 package com.example.ui.components
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.ImageDecoder
 import android.net.Uri
@@ -75,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -104,16 +107,35 @@ enum class ScanDialogStep {
 
 @Composable
 fun SportCardScanDialog(
+    initialScannedText: String? = null,
     onExtracted: (ExtractedMemberInfo) -> Unit,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    var currentStep by remember { mutableStateOf(ScanDialogStep.CHOOSE_INPUT) }
+    var currentStep by remember {
+        mutableStateOf(
+            if (!initialScannedText.isNullOrBlank()) ScanDialogStep.PROCESSING
+            else ScanDialogStep.CHOOSE_INPUT
+        )
+    }
     var extractedResult by remember { mutableStateOf<ExtractedMemberInfo?>(null) }
     var errorMessage by remember { mutableStateOf("") }
     var statusText by remember { mutableStateOf("Traitement de la carte en cours...") }
+
+    fun processRawText(text: String) {
+        currentStep = ScanDialogStep.PROCESSING
+        statusText = "Analyse des données de la carte..."
+        extractedResult = SportCardScanner.parseCardText(text)
+        currentStep = ScanDialogStep.RESULT_PREVIEW
+    }
+
+    LaunchedEffect(initialScannedText) {
+        if (!initialScannedText.isNullOrBlank()) {
+            processRawText(initialScannedText)
+        }
+    }
 
     fun processBitmap(bitmap: Bitmap) {
         currentStep = ScanDialogStep.PROCESSING
@@ -130,13 +152,25 @@ fun SportCardScanDialog(
         }
     }
 
-    // Camera take picture preview launcher
+    // Full-resolution camera capture (FileProvider URI) → far better OCR/QR results
+    // than the low-resolution TakePicturePreview() thumbnail.
+    var pendingPhotoUri by remember { mutableStateOf<Uri?>(null) }
     val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap: Bitmap? ->
-        if (bitmap != null) {
-            processBitmap(bitmap)
+        contract = ActivityResultContracts.TakePicture()
+    ) { success: Boolean ->
+        if (success) {
+            pendingPhotoUri?.let { uri ->
+                val bmp = loadBitmapFromUri(context, uri)
+                if (bmp != null) {
+                    processBitmap(bmp)
+                } else {
+                    errorMessage = "Impossible de lire la photo de la carte"
+                }
+            }
+        } else {
+            errorMessage = "Prise de photo annulée"
         }
+        pendingPhotoUri = null
     }
 
     // Gallery visual media photo picker launcher
@@ -286,7 +320,13 @@ fun SportCardScanDialog(
                             // Option 1: Take Photo with Camera
                             Button(
                                 onClick = {
-                                    cameraLauncher.launch(null)
+                                    val uri = createCardPhotoUri(context)
+                                    if (uri == null) {
+                                        errorMessage = "Impossible de préparer le fichier photo"
+                                    } else {
+                                        pendingPhotoUri = uri
+                                        cameraLauncher.launch(uri)
+                                    }
                                 },
                                 shape = RoundedCornerShape(14.dp),
                                 colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
@@ -410,7 +450,8 @@ private fun CardExtractionPreviewAndEdit(
     var birthDate by remember(initialInfo) { mutableStateOf(initialInfo.birthDate) }
     var phone by remember(initialInfo) { mutableStateOf(initialInfo.phone) }
     var cardNumber by remember(initialInfo) { mutableStateOf(initialInfo.cardNumber) }
-    var isEditMode by remember { mutableStateOf(initialInfo.lastName.isBlank() || initialInfo.firstName.isBlank()) }
+    var season by remember(initialInfo) { mutableStateOf(initialInfo.season) }
+    var isEditMode by remember { mutableStateOf(initialInfo.lastName.isBlank() || initialInfo.firstName.isBlank() || initialInfo.birthDate.isBlank()) }
 
     val calculatedCategory = remember(birthDate) {
         if (birthDate.isNotBlank()) JudoGroup.fromBirthDate(birthDate) else initialInfo.group
@@ -558,6 +599,19 @@ private fun CardExtractionPreviewAndEdit(
                             modifier = Modifier.weight(1f)
                         )
                     }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = season,
+                            onValueChange = { season = it },
+                            label = { Text("Saison") },
+                            placeholder = { Text("ex: 2026/2027") },
+                            singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
                 }
             } else {
                 // Details summary list
@@ -572,6 +626,10 @@ private fun CardExtractionPreviewAndEdit(
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     DetailItem(
+                        label = "Prénom & Nom",
+                        value = "$firstName $lastName".trim().ifBlank { "Non détecté" }
+                    )
+                    DetailItem(
                         label = "Date de naissance",
                         value = if (birthDate.isNotBlank()) birthDate else "Non détectée sur la carte"
                     )
@@ -584,8 +642,12 @@ private fun CardExtractionPreviewAndEdit(
                         value = if (cardNumber.isNotBlank()) cardNumber else "Non détecté"
                     )
                     DetailItem(
-                        label = "QR Code lié",
-                        value = if (initialInfo.qrCode.isNotBlank()) initialInfo.qrCode else "Généré automatiquement"
+                        label = "Saison",
+                        value = if (season.isNotBlank()) season else "Non détectée"
+                    )
+                    DetailItem(
+                        label = "Ceinture",
+                        value = initialInfo.belt.displayName
                     )
                     DetailItem(
                         label = "Photo détectée",
@@ -619,10 +681,10 @@ private fun CardExtractionPreviewAndEdit(
                     birthDate = birthDate.trim(),
                     phone = phone.trim(),
                     cardNumber = cardNumber.trim(),
+                    season = season.trim().ifBlank { initialInfo.season },
                     group = if (birthDate.isNotBlank()) JudoGroup.fromBirthDate(birthDate.trim()) else initialInfo.group,
-                    qrCode = if (initialInfo.qrCode.isNotBlank()) initialInfo.qrCode
-                        else if (cardNumber.isNotBlank()) "JCS-$cardNumber"
-                        else "JCS-${System.currentTimeMillis().toString().takeLast(5)}"
+                    qrCode = if (cardNumber.isNotBlank()) "JCS-$cardNumber"
+                        else initialInfo.qrCode.ifBlank { "JCS-${System.currentTimeMillis().toString().takeLast(5)}" }
                 )
                 onApply(finalInfo)
             },
@@ -665,7 +727,33 @@ private fun LiveCameraCardViewfinder(
     onCancel: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     var previewView by remember { mutableStateOf<PreviewView?>(null) }
+    var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED
+        )
+    }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted -> hasCameraPermission = granted }
+
+    LaunchedEffect(hasCameraPermission) {
+        if (!hasCameraPermission) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try {
+                cameraProvider?.unbindAll()
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     Box(
         modifier = Modifier
@@ -674,30 +762,51 @@ private fun LiveCameraCardViewfinder(
             .clip(RoundedCornerShape(16.dp))
             .background(Color.Black)
     ) {
-        AndroidView(
-            factory = { ctx ->
-                PreviewView(ctx).also { pView ->
-                    previewView = pView
-                    val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
-                    cameraProviderFuture.addListener({
-                        val cameraProvider = cameraProviderFuture.get()
-                        val preview = Preview.Builder().build().also {
-                            it.setSurfaceProvider(pView.surfaceProvider)
-                        }
-                        try {
-                            cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
-                                (ctx as androidx.lifecycle.LifecycleOwner),
-                                CameraSelector.DEFAULT_BACK_CAMERA,
-                                preview
-                            )
-                        } catch (_: Exception) {
-                        }
-                    }, ContextCompat.getMainExecutor(ctx))
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
+        if (hasCameraPermission) {
+            AndroidView(
+                factory = { ctx ->
+                    PreviewView(ctx).also { pView ->
+                        // COMPATIBLE (TextureView) so that pView.bitmap is always available on capture.
+                        pView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                        pView.scaleType = PreviewView.ScaleType.FILL_CENTER
+                        previewView = pView
+                        val cameraProviderFuture = ProcessCameraProvider.getInstance(ctx)
+                        cameraProviderFuture.addListener({
+                            try {
+                                val provider = cameraProviderFuture.get()
+                                cameraProvider = provider
+                                val preview = Preview.Builder().build().also {
+                                    it.setSurfaceProvider(pView.surfaceProvider)
+                                }
+                                provider.unbindAll()
+                                provider.bindToLifecycle(
+                                    lifecycleOwner,
+                                    CameraSelector.DEFAULT_BACK_CAMERA,
+                                    preview
+                                )
+                            } catch (_: Exception) {
+                                // Camera unavailable — the photo/galerie options remain available.
+                            }
+                        }, ContextCompat.getMainExecutor(ctx))
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Accès caméra requis.\nAutorisez la caméra pour scanner en direct.",
+                    color = Color.White,
+                    textAlign = TextAlign.Center,
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        }
 
         // Card Framing Guide Overlay
         Box(
@@ -726,10 +835,16 @@ private fun LiveCameraCardViewfinder(
 
             Button(
                 onClick = {
-                    val pView = previewView
-                    val bmp = pView?.bitmap
+                    val bmp = previewView?.bitmap
                     if (bmp != null) {
                         onCardCaptured(bmp)
+                    } else {
+                        val pv = previewView
+                        if (pv != null) {
+                            try {
+                                pv.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+                            } catch (_: Exception) {}
+                        }
                     }
                 },
                 colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
@@ -742,18 +857,44 @@ private fun LiveCameraCardViewfinder(
     }
 }
 
-private fun loadBitmapFromUri(context: Context, uri: Uri): Bitmap? {
+private fun loadBitmapFromUri(context: Context, uri: Uri, maxDimension: Int = 2600): Bitmap? {
     return try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val source = ImageDecoder.createSource(context.contentResolver, uri)
-            ImageDecoder.decodeBitmap(source) { decoder, _, _ ->
+            ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                 decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                 decoder.isMutableRequired = true
+                val width = info.size.width
+                val height = info.size.height
+                val largest = maxOf(width, height)
+                if (largest > maxDimension && largest > 0) {
+                    val ratio = maxDimension.toFloat() / largest.toFloat()
+                    decoder.setTargetSize(
+                        (width * ratio).toInt().coerceAtLeast(1),
+                        (height * ratio).toInt().coerceAtLeast(1)
+                    )
+                }
             }
         } else {
             @Suppress("DEPRECATION")
             MediaStore.Images.Media.getBitmap(context.contentResolver, uri)
         }
+    } catch (_: Exception) {
+        null
+    }
+}
+
+/** Creates a temp JPEG file (via FileProvider) the system camera app can write the full-res shot to. */
+private fun createCardPhotoUri(context: Context): Uri? {
+    return try {
+        val dir = java.io.File(context.cacheDir, "card_photos").apply { mkdirs() }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+        val file = java.io.File(dir, "card_$stamp.jpg")
+        androidx.core.content.FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            file
+        )
     } catch (_: Exception) {
         null
     }

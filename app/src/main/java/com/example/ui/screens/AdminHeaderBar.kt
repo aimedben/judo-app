@@ -58,6 +58,7 @@ import com.example.data.model.AdminNotification
 import com.example.data.model.AdminProfile
 import com.example.data.model.ClubSettings
 import com.example.ui.theme.JudoGold
+import com.example.ui.theme.JudoGoldDark
 import com.example.ui.theme.JudoRed
 
 @Composable
@@ -76,13 +77,15 @@ fun AdminHeaderBar(
     modifier: Modifier = Modifier
 ) {
     var profileMenuExpanded by remember { mutableStateOf(false) }
+    // Gold is too light on white surfaces, so the light theme uses a darker amber.
+    val goldAccent = if (isDarkTheme) JudoGold else JudoGoldDark
 
     Surface(
         modifier = modifier
             .fillMaxWidth()
             .testTag("admin_header_bar"),
         color = MaterialTheme.colorScheme.surface,
-        tonalElevation = 3.dp,
+        tonalElevation = 0.dp,
         border = CardDefaults.outlinedCardBorder()
     ) {
         Row(
@@ -124,7 +127,7 @@ fun AdminHeaderBar(
                     Text(
                         text = "Espace Administrateur",
                         style = MaterialTheme.typography.labelSmall.copy(
-                            color = JudoGold,
+                            color = goldAccent,
                             fontWeight = FontWeight.Bold,
                             letterSpacing = 0.5.sp
                         )
@@ -169,7 +172,7 @@ fun AdminHeaderBar(
                         Icon(
                             imageVector = Icons.Default.CloudSync,
                             contentDescription = "Supabase Cloud & Sauvegardes",
-                            tint = if (pendingSyncCount > 0) JudoGold else MaterialTheme.colorScheme.onSurface,
+                            tint = if (pendingSyncCount > 0) goldAccent else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.size(20.dp)
                         )
                         if (pendingSyncCount > 0) {

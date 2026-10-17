@@ -54,6 +54,7 @@ data class CoachEntity(
     val assignedCategoriesJoined: String, // comma separated
     val isActive: Boolean = true,
     val sessionsCount: Int = 0,
+    val photoPath: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     fun toDomain(): CoachUser = CoachUser(
@@ -63,7 +64,8 @@ data class CoachEntity(
         phone = phone,
         assignedCategories = if (assignedCategoriesJoined.isBlank()) emptyList() else assignedCategoriesJoined.split(";"),
         isActive = isActive,
-        sessionsCount = sessionsCount
+        sessionsCount = sessionsCount,
+        photoPath = photoPath
     )
 
     companion object {
@@ -75,6 +77,7 @@ data class CoachEntity(
             assignedCategoriesJoined = coach.assignedCategories.joinToString(";"),
             isActive = coach.isActive,
             sessionsCount = coach.sessionsCount,
+            photoPath = coach.photoPath,
             updatedAt = updatedAt
         )
     }

@@ -280,17 +280,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     val coaches: StateFlow<List<CoachUser>> = _coaches.asStateFlow()
 
+    private fun loadCoachesFromDatabase() {
+        viewModelScope.launch {
+            try {
+                val stored = database.clubDao().getAllCoaches()
+                if (stored.isNotEmpty()) {
+                    _coaches.value = stored.map { it.toDomain() }
+                } else if (_coaches.value.isNotEmpty()) {
+                    // First run: seed the local database so coaches (and their photos) sync to the cloud.
+                    database.clubDao().insertCoaches(_coaches.value.map { CoachEntity.fromDomain(it) })
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun persistCoach(coach: CoachUser, enqueue: Boolean = true) {
+        viewModelScope.launch {
+            database.clubDao().insertCoach(CoachEntity.fromDomain(coach))
+            if (enqueue) supabaseSyncService.enqueueCoach(CoachEntity.fromDomain(coach))
+        }
+    }
+
     fun addCoach(coach: CoachUser) {
         _coaches.value = _coaches.value + coach
+        persistCoach(coach)
     }
 
     fun updateCoach(coach: CoachUser) {
         _coaches.value = _coaches.value.map { if (it.id == coach.id) coach else it }
+        persistCoach(coach)
     }
 
     fun toggleCoachActive(coachId: String) {
         _coaches.value = _coaches.value.map {
             if (it.id == coachId) it.copy(isActive = !it.isActive) else it
+        }
+        _coaches.value.firstOrNull { it.id == coachId }?.let { persistCoach(it) }
+    }
+
+    fun deleteCoach(coachId: String) {
+        val removed = _coaches.value.firstOrNull { it.id == coachId }
+        _coaches.value = _coaches.value.filterNot { it.id == coachId }
+        viewModelScope.launch {
+            removed?.let {
+                database.clubDao().deleteCoach(CoachEntity.fromDomain(it))
+                com.example.util.PhotoCompressor.deleteLocal(it.photoPath)
+            }
+            supabaseSyncService.enqueueCoachDelete(coachId)
         }
     }
 
@@ -328,6 +365,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 } else coach
             } else coach
         }
+        _coaches.value.filter { it.name.equals(coachName, ignoreCase = true) }.forEach { persistCoach(it) }
     }
 
     fun removeCoachFromCategory(categoryId: String, coachName: String) {
@@ -346,6 +384,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 coach.copy(assignedCategories = coach.assignedCategories.filterNot { it.equals(catName, ignoreCase = true) })
             } else coach
         }
+        _coaches.value.filter { it.name.equals(coachName, ignoreCase = true) }.forEach { persistCoach(it) }
     }
 
     // Scheduled Training Sessions (Weekly Planning & Calendar)
@@ -639,6 +678,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _lastSyncReport.value = report
             }
         }
+        loadCoachesFromDatabase()
         startDaily22hSyncChecker()
     }
 
@@ -1064,71 +1104,119 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         setThemePreference(next)
     }
 
+    private var isProcessingScan: Boolean = false
+
     fun onQrScanned(code: String) {
         val now = System.currentTimeMillis()
         val clean = code.trim()
         if (clean.isBlank()) return
 
-        // Debounce exact duplicate scan within 400ms to eliminate hardware key-repeat bounce
-        if (clean == lastScannedCode && (now - lastScannedTimestamp) < 400) {
+        // Debounce exact duplicate scan within 800ms
+        if (clean == lastScannedCode && (now - lastScannedTimestamp) < 800) {
             return
         }
+        if (isProcessingScan) return
+
+        isProcessingScan = true
         lastScannedCode = clean
         lastScannedTimestamp = now
 
         viewModelScope.launch {
-            val result = repository.processCheckIn(clean)
-            triggerHapticFeedback(result)
-            when (result) {
-                is CheckInResult.Success -> {
-                    _activeCheckInResult.value = result
-                    _coachScanFeedback.value = CoachScanFeedback.Success(
-                        member = result.member,
-                        isCotisationUpToDate = result.member.isCotisationUpToDate,
-                        timeString = result.attendance.timeString
-                    )
-                    playScanSound(true)
-                    _lastScanned.value = AttendanceWithMember(
-                        attendanceId = result.attendance.id,
-                        memberId = result.member.id,
-                        firstName = result.member.firstName,
-                        lastName = result.member.lastName,
-                        groupCode = result.member.groupCode,
-                        beltName = result.member.beltName,
-                        dateString = result.attendance.dateString,
-                        timeString = result.attendance.timeString,
-                        timestamp = result.attendance.timestamp,
-                        qrCode = result.member.qrCode,
-                        phone = result.member.phone
-                    )
-                }
-                is CheckInResult.AlreadyCheckedIn -> {
-                    _activeCheckInResult.value = result
-                    _coachScanFeedback.value = CoachScanFeedback.AlreadyChecked(
-                        member = result.member,
-                        timeString = result.existingAttendance.timeString
-                    )
-                    playScanSound(true)
-                }
-                is CheckInResult.UnknownQr -> {
-                    // Try parsing as sports card with member info!
-                    val extracted = CardDataParser.parseCardData(clean)
-                    if (extracted.firstName.isNotBlank() || extracted.lastName.isNotBlank()) {
-                        _scannedMemberForCreation.value = extracted
-                    } else {
-                        _unassignedQrCode.value = clean
+            try {
+                val sessionStart = _activeSession.value?.startTimestamp
+                val result = repository.processCheckIn(clean, "QR_SCAN", sessionStart)
+                triggerHapticFeedback(result)
+                when (result) {
+                    is CheckInResult.Success -> emitCheckInSuccess(result)
+                    is CheckInResult.AlreadyCheckedIn -> emitAlreadyChecked(result)
+                    is CheckInResult.UnknownQr -> handleUnknownQr(clean)
+                    is CheckInResult.Error -> {
+                        _activeCheckInResult.value = result
+                        _coachScanFeedback.value = CoachScanFeedback.Invalid(result.message)
+                        playScanSound(false)
                     }
-                    _activeCheckInResult.value = result
-                    _coachScanFeedback.value = CoachScanFeedback.Invalid("QR code non reconnu dans le club")
-                    playScanSound(false)
                 }
-                is CheckInResult.Error -> {
-                    _activeCheckInResult.value = result
-                    _coachScanFeedback.value = CoachScanFeedback.Invalid(result.message)
-                    playScanSound(false)
-                }
+            } finally {
+                isProcessingScan = false
             }
         }
+    }
+
+    /**
+     * Unknown code: try to auto-register the athlete from the scanned sports card and
+     * immediately check them in. When the code carries no usable identity, fall back to
+     * the manual flows (unassigned QR / prefilled creation dialog).
+     */
+    private suspend fun handleUnknownQr(rawCode: String) {
+        val extracted = CardDataParser.parseCardData(rawCode)
+        val hasFullName = extracted.firstName.isNotBlank() && extracted.lastName.isNotBlank()
+
+        if (hasFullName) {
+            val created = repository.registerMemberFromCard(rawCode)
+            if (created != null) {
+                // Re-run the check-in now that the member exists in the database.
+                val retry = repository.processCheckIn(
+                    rawCode,
+                    "QR_SCAN",
+                    _activeSession.value?.startTimestamp
+                )
+                triggerHapticFeedback(retry)
+                when (retry) {
+                    is CheckInResult.Success -> emitCheckInSuccess(retry)
+                    is CheckInResult.AlreadyCheckedIn -> emitAlreadyChecked(retry)
+                    else -> {
+                        _activeCheckInResult.value = retry
+                        _coachScanFeedback.value = CoachScanFeedback.Invalid(
+                            "Athlète « ${created.fullName} » enregistré, pointage à confirmer"
+                        )
+                        playScanSound(false)
+                    }
+                }
+                return
+            }
+        }
+
+        // Partial identity (missing a name) or non-card code → keep the manual flows.
+        if (extracted.firstName.isNotBlank() || extracted.lastName.isNotBlank()) {
+            _scannedMemberForCreation.value = extracted
+        } else {
+            _unassignedQrCode.value = rawCode
+        }
+        _activeCheckInResult.value = CheckInResult.UnknownQr(rawCode)
+        _coachScanFeedback.value = CoachScanFeedback.Invalid("QR code non reconnu dans le club")
+        playScanSound(false)
+    }
+
+    private fun emitCheckInSuccess(result: CheckInResult.Success) {
+        _activeCheckInResult.value = result
+        _coachScanFeedback.value = CoachScanFeedback.Success(
+            member = result.member,
+            isCotisationUpToDate = result.member.isCotisationUpToDate,
+            timeString = result.attendance.timeString
+        )
+        playScanSound(true)
+        _lastScanned.value = AttendanceWithMember(
+            attendanceId = result.attendance.id,
+            memberId = result.member.id,
+            firstName = result.member.firstName,
+            lastName = result.member.lastName,
+            groupCode = result.member.groupCode,
+            beltName = result.member.beltName,
+            dateString = result.attendance.dateString,
+            timeString = result.attendance.timeString,
+            timestamp = result.attendance.timestamp,
+            qrCode = result.member.qrCode,
+            phone = result.member.phone
+        )
+    }
+
+    private fun emitAlreadyChecked(result: CheckInResult.AlreadyCheckedIn) {
+        _activeCheckInResult.value = result
+        _coachScanFeedback.value = CoachScanFeedback.AlreadyChecked(
+            member = result.member,
+            timeString = result.existingAttendance.timeString
+        )
+        playScanSound(true)
     }
 
     fun extractCardDataForMemberCreation(rawCardData: String) {
@@ -1142,7 +1230,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun manualCheckIn(memberId: Long) {
         viewModelScope.launch {
-            val result = repository.manualCheckIn(memberId)
+            val result = repository.manualCheckIn(memberId, _activeSession.value?.startTimestamp)
             triggerHapticFeedback(result)
             _activeCheckInResult.value = result
             when (result) {
@@ -1207,7 +1295,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repository.associateQrCodeToMember(memberId, qrCode)
             _unassignedQrCode.value = null
             // Automatically check-in after associating!
-            val result = repository.processCheckIn(qrCode)
+            val result = repository.processCheckIn(qrCode, "QR_SCAN", _activeSession.value?.startTimestamp)
             _activeCheckInResult.value = result
         }
     }
@@ -1236,7 +1324,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (member.id == 0L) {
                 val newId = repository.insertMember(member)
                 // If member was just created from card, auto check-in them for their session!
-                repository.processCheckIn(member.qrCode)
+                repository.processCheckIn(member.qrCode, "QR_SCAN", _activeSession.value?.startTimestamp)
             } else {
                 repository.updateMember(member)
             }

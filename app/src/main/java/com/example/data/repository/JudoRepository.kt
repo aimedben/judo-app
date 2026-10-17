@@ -72,18 +72,25 @@ class JudoRepository(
         return memberDao.getMemberByQrCode(qrCode.trim())
     }
 
-    suspend fun processCheckIn(rawCode: String, method: String = "QR_SCAN"): CheckInResult {
-        val cleanCode = rawCode.trim()
+    suspend fun processCheckIn(
+        rawCode: String,
+        method: String = "QR_SCAN",
+        sessionStartTimestamp: Long? = null
+    ): CheckInResult {
+        val cleanCode = rawCode.trim().replace("\n", "").replace("\r", "").replace("\t", "")
+        if (cleanCode.isBlank()) return CheckInResult.Error("QR vide")
+
         var member = memberDao.getMemberByQrCode(cleanCode)
 
         if (member == null) {
             val extracted = com.example.util.CardDataParser.parseCardData(cleanCode)
             if (extracted.qrCode.isNotBlank()) {
-                member = memberDao.getMemberByQrCode(extracted.qrCode)
+                member = memberDao.getMemberByQrCode(extracted.qrCode.trim())
             }
             if (member == null && extracted.cardNumber.isNotBlank()) {
-                member = memberDao.getMemberByQrCode(extracted.cardNumber)
-                    ?: memberDao.getMemberByQrCode("JCS-${extracted.cardNumber}")
+                val cardNum = extracted.cardNumber.trim()
+                member = memberDao.getMemberByQrCode(cardNum)
+                    ?: memberDao.getMemberByQrCode("JCS-$cardNum")
             }
         }
 
@@ -92,7 +99,11 @@ class JudoRepository(
         }
 
         val today = getTodayDateString()
-        val existing = attendanceDao.findTodayAttendance(member.id, today)
+        val existing = if (sessionStartTimestamp != null) {
+            attendanceDao.findAttendanceSince(member.id, today, sessionStartTimestamp)
+        } else {
+            attendanceDao.findTodayAttendance(member.id, today)
+        }
         if (existing != null) {
             return CheckInResult.AlreadyCheckedIn(member, existing)
         }
@@ -111,10 +122,14 @@ class JudoRepository(
         return CheckInResult.Success(member, finalAtt)
     }
 
-    suspend fun manualCheckIn(memberId: Long): CheckInResult {
+    suspend fun manualCheckIn(memberId: Long, sessionStartTimestamp: Long? = null): CheckInResult {
         val member = memberDao.getMemberByIdDirect(memberId) ?: return CheckInResult.Error("Membre introuvable")
         val today = getTodayDateString()
-        val existing = attendanceDao.findTodayAttendance(member.id, today)
+        val existing = if (sessionStartTimestamp != null) {
+            attendanceDao.findAttendanceSince(member.id, today, sessionStartTimestamp)
+        } else {
+            attendanceDao.findTodayAttendance(member.id, today)
+        }
         if (existing != null) {
             return CheckInResult.AlreadyCheckedIn(member, existing)
         }
@@ -143,6 +158,55 @@ class JudoRepository(
         val saved = member.copy(id = id)
         syncService?.enqueueMember(saved, "UPSERT")
         return id
+    }
+
+    /**
+     * Builds and stores a new member from a scanned sports card (or any coded card
+     * carrying the athlete identity). Used to auto-register athletes whose card is
+     * scanned but who are not yet present in the database.
+     * Returns the created member, or null when the code carries no usable identity.
+     */
+    suspend fun registerMemberFromCard(rawCode: String): Member? {
+        val cleanCode = rawCode.trim()
+        if (cleanCode.isBlank()) return null
+
+        val extracted = com.example.util.CardDataParser.parseCardData(cleanCode)
+        val firstName = extracted.firstName.trim()
+        val lastName = extracted.lastName.trim()
+        if (firstName.isBlank() || lastName.isBlank()) return null
+
+        // Prefer the card's own QR identifier so future identical scans resolve to
+        // this member; fall back to the raw scanned code.
+        val qr = extracted.qrCode.trim().ifBlank { cleanCode }
+        memberDao.getMemberByQrCode(qr)?.let { return it }
+        if (extracted.cardNumber.isNotBlank()) {
+            val cn = extracted.cardNumber.trim()
+            memberDao.getMemberByQrCode(cn)?.let { return it }
+            memberDao.getMemberByQrCode("JCS-$cn")?.let { return it }
+        }
+
+        val notes = buildString {
+            if (extracted.notes.isNotBlank()) append(extracted.notes.trim())
+            if (extracted.cardNumber.isNotBlank()) {
+                if (isNotEmpty()) append(" - ")
+                append("Licence ${extracted.cardNumber}")
+            }
+        }
+
+        val member = Member(
+            firstName = firstName,
+            lastName = lastName,
+            birthDate = extracted.birthDate.trim(),
+            phone = extracted.phone.trim(),
+            groupCode = extracted.group.code,
+            beltName = extracted.belt.name,
+            qrCode = qr,
+            registrationDate = getTodayDateString(),
+            photoUrl = extracted.photoUrl.trim(),
+            notes = notes
+        )
+        val id = insertMember(member)
+        return member.copy(id = id)
     }
 
     suspend fun updateMember(member: Member) {

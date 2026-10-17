@@ -9,7 +9,8 @@ data class CoachUser(
     val phone: String,
     val assignedCategories: List<String> = emptyList(),
     val isActive: Boolean = true,
-    val sessionsCount: Int = 0
+    val sessionsCount: Int = 0,
+    val photoPath: String = ""
 )
 
 data class ClubSettings(

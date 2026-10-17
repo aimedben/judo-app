@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.Logout
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SportsMartialArts
@@ -37,8 +40,10 @@ import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.NavigationRailItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -50,9 +55,16 @@ import com.example.ui.screens.AdminCloudSyncScreen
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
 import com.example.data.model.ActiveTrainingSession
 import com.example.data.model.AdminNotification
 import com.example.data.model.AdminProfile
@@ -92,12 +104,9 @@ import com.example.ui.screens.CoachSessionPointageScreen
 import com.example.ui.screens.CoachSessionPreparationScreen
 import com.example.ui.screens.CoachSessionSummaryScreen
 import com.example.ui.screens.DashboardScreen
-import com.example.ui.screens.HistoryScreen
-import com.example.ui.screens.HomeScreen
 import com.example.ui.screens.MemberDetailScreen
 import com.example.ui.screens.MembersScreen
 import com.example.ui.screens.NotificationsDialog
-import com.example.ui.screens.ScannerScreen
 import com.example.ui.screens.ScannerTargetMode
 import com.example.ui.screens.StatFilterMode
 import com.example.ui.screens.StatFilteredMembersScreen
@@ -167,8 +176,23 @@ class MainActivity : ComponentActivity() {
                 ThemePreference.SYSTEM -> systemDark
             }
 
+            // Keep the status/navigation bar icons in sync with the in-app theme
+            // (the app may be forced light/dark independently of the device setting).
+            val view = LocalView.current
+            SideEffect {
+                val window = (view.context as? Activity)?.window ?: return@SideEffect
+                val controller = WindowCompat.getInsetsController(window, view)
+                controller.isAppearanceLightStatusBars = !isDark
+                controller.isAppearanceLightNavigationBars = !isDark
+            }
+
             MyApplicationTheme(darkTheme = isDark) {
-                JudoApp(viewModel = viewModel, isDarkTheme = isDark)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    JudoApp(viewModel = viewModel, isDarkTheme = isDark)
+                }
             }
         }
     }
@@ -245,9 +269,13 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         else allMembers.filter { it.groupCode.equals(selectedCategory!!.groupCode, ignoreCase = true) }
     }
 
-    val sessionAttendances = remember(todayAttendance, selectedCategory) {
-        if (selectedCategory == null) todayAttendance
+    val sessionAttendances = remember(todayAttendance, selectedCategory, activeSession) {
+        val base = if (selectedCategory == null) todayAttendance
         else todayAttendance.filter { it.groupCode.equals(selectedCategory!!.groupCode, ignoreCase = true) }
+        // A new session must start with an empty pointage: only check-ins recorded
+        // at/after the session start count as present for THIS session.
+        val startTs = activeSession?.startTimestamp
+        if (startTs == null) base else base.filter { it.timestamp >= startTs }
     }
 
     val context = LocalContext.current
@@ -420,7 +448,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             onStartTraining = { session ->
                                 viewModel.startSession(session)
                                 isPreparingSession = false
-                                isCoachCameraScannerOpen = true // Display dedicated full-screen scan page by default!
+                                // Douchette HID (Bluetooth/USB) is active by default on the
+                                // pointage screen; the camera scanner stays an optional action.
+                                isCoachCameraScannerOpen = false
                             }
                         )
                     } else {
@@ -461,7 +491,11 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
             val isTablet = maxWidth >= 600.dp
             if (isTablet) {
                 // Tablet layout: Coach NavigationRail on left
-                Row(modifier = Modifier.fillMaxSize()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .statusBarsPadding()
+                ) {
                     NavigationRail(
                         modifier = Modifier
                             .fillMaxHeight()
@@ -505,12 +539,47 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                                 modifier = Modifier.testTag("coach_rail_${tab.name.lowercase()}")
                             )
                         }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        // Theme toggle on coach rail
+                        IconButton(
+                            onClick = { viewModel.toggleTheme() },
+                            modifier = Modifier.padding(bottom = 8.dp)
+                        ) {
+                            Icon(
+                                imageVector = if (isDarkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                                contentDescription = "Changer thème",
+                                tint = if (isDarkTheme) Color(0xFFFFD54F) else JudoRed
+                            )
+                        }
+
+                        // Quit coach space and go back to role / category selection
+                        IconButton(
+                            onClick = {
+                                isCoachCameraScannerOpen = false
+                                isPreparingSession = false
+                                isSessionSummaryShown = false
+                                currentCoachTab = CoachTab.SESSION
+                                viewModel.selectCategory(null)
+                            },
+                            modifier = Modifier
+                                .padding(bottom = 16.dp)
+                                .testTag("coach_rail_quit")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Logout,
+                                contentDescription = "Quitter l'espace coach",
+                                tint = JudoRed
+                            )
+                        }
                     }
 
                     Box(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxHeight()
+                            .navigationBarsPadding()
                     ) {
                         CoachScreenBody()
                     }
@@ -604,22 +673,32 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
 
         if (isTablet) {
             // Tablet layout: NavigationRail on left
-            Row(modifier = Modifier.fillMaxSize()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+            ) {
                 NavigationRail(
                     modifier = Modifier
                         .fillMaxHeight()
                         .testTag("tablet_navigation_rail"),
                     containerColor = MaterialTheme.colorScheme.surface,
                     header = {
-                        Text(
-                            text = "🥋 JUDO",
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Black,
-                                color = JudoRed
-                            ),
-                            modifier = Modifier.padding(vertical = 16.dp)
-                        )
-                    }
+    Text(
+        text = buildAnnotatedString {
+            withStyle(SpanStyle(fontSize = 36.sp)) {
+                append("🥋\n") // Retour à la ligne après l'emoji
+            }
+            append("JUDO")
+        },
+        style = MaterialTheme.typography.titleMedium.copy(
+            fontWeight = FontWeight.Black,
+            color = JudoRed
+        ),
+        textAlign = TextAlign.Center,
+        modifier = Modifier.padding(vertical = 16.dp)
+    )
+}
                 ) {
                     ScreenTab.entries.forEach { tab ->
                         NavigationRailItem(
@@ -660,6 +739,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .navigationBarsPadding()
                 ) {
                     AppScreenContent(
                         currentTab = currentTab,
@@ -720,6 +800,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onAddCoach = { viewModel.addCoach(it) },
                         onUpdateCoach = { viewModel.updateCoach(it) },
                         onToggleCoachActive = { viewModel.toggleCoachActive(it) },
+                        onDeleteCoach = { viewModel.deleteCoach(it) },
                         onAddCategory = { viewModel.addCategory(it) },
                         onUpdateCategory = { viewModel.updateCategory(it) },
                         onToggleCategoryActive = { viewModel.toggleCategoryActive(it) },
@@ -848,6 +929,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onAddCoach = { viewModel.addCoach(it) },
                         onUpdateCoach = { viewModel.updateCoach(it) },
                         onToggleCoachActive = { viewModel.toggleCoachActive(it) },
+                        onDeleteCoach = { viewModel.deleteCoach(it) },
                         onAddCategory = { viewModel.addCategory(it) },
                         onUpdateCategory = { viewModel.updateCategory(it) },
                         onToggleCategoryActive = { viewModel.toggleCategoryActive(it) },
@@ -1025,6 +1107,7 @@ private fun AppScreenContent(
     onAddCoach: (CoachUser) -> Unit = {},
     onUpdateCoach: (CoachUser) -> Unit = {},
     onToggleCoachActive: (String) -> Unit = {},
+    onDeleteCoach: (String) -> Unit = {},
     onAddCategory: (JudoCategory) -> Unit = {},
     onUpdateCategory: (JudoCategory) -> Unit = {},
     onToggleCategoryActive: (String) -> Unit = {},
@@ -1218,7 +1301,8 @@ private fun AppScreenContent(
                 categories = categories,
                 onAddCoach = onAddCoach,
                 onUpdateCoach = onUpdateCoach,
-                onToggleCoachActive = onToggleCoachActive
+                onToggleCoachActive = onToggleCoachActive,
+                onDeleteCoach = onDeleteCoach
             )
         }
         ScreenTab.CATEGORIES -> {

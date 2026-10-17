@@ -22,6 +22,35 @@ val JudoBlue = Color(0xFF283593)
 val JudoSilver = Color(0xFFB0BEC5)
 val JudoBronze = Color(0xFFCD7F32)
 
+// Accessible brand accents (theme-aware helpers)
+// Amber #FFB300 is too light for text/icons on white, so the light theme uses a darker gold.
+val JudoGoldDark = Color(0xFFB45309)
+
+// Light theme tonal containers
+val JudoRedContainer = Color(0xFFFFDAD6)
+val JudoRedOnContainer = Color(0xFF410002)
+val JudoNavyContainer = Color(0xFFE0E0FF)
+val JudoNavyOnContainer = Color(0xFF0A1050)
+val JudoGoldContainer = Color(0xFFFFE7B0)
+val JudoGoldOnContainer = Color(0xFF3A2300)
+
+// Light theme neutrals
+val JudoLightBackground = Color(0xFFF7F6F8)
+val JudoLightSurface = Color(0xFFFFFFFF)
+val JudoLightSurfaceVariant = Color(0xFFEFEDF1)
+val JudoLightOnSurface = Color(0xFF1B1B1D)
+val JudoLightOnSurfaceVariant = Color(0xFF54525A)
+val JudoLightOutline = Color(0xFF8B8A90)
+val JudoLightOutlineVariant = Color(0xFFDCDADF)
+
+// Dark theme neutrals
+val JudoDarkBackground = Color(0xFF131215)
+val JudoDarkSurface = Color(0xFF131215)
+val JudoDarkSurfaceVariant = Color(0xFF2A282D)
+val JudoDarkOnSurface = Color(0xFFE6E1E6)
+val JudoDarkOnSurfaceVariant = Color(0xFFC9C5CE)
+
 // Dark Theme Card & Surface Colors
 val DarkCardBorder = Color(0xFF37474F)
 val DarkSurfaceVariant = Color(0xFF263238)
+

@@ -24,7 +24,10 @@ data class ActiveTrainingSession(
     val coach1Present: Boolean,
     val coach2Name: String,
     val coach2Present: Boolean,
-    val isExternalScannerMode: Boolean = true
+    val isExternalScannerMode: Boolean = true,
+    /** Wall-clock timestamp when this session was created. Used to isolate the
+     *  pointage of a new session from any earlier check-in made the same day. */
+    val startTimestamp: Long = System.currentTimeMillis()
 )
 
 data class PastTrainingSession(

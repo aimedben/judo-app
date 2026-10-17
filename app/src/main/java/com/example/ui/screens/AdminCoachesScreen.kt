@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Category
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.MilitaryTech
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.filled.PersonOff
 import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,6 +44,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,6 +54,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -60,6 +64,7 @@ import com.example.data.model.JudoCategory
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import coil.compose.AsyncImage
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -69,10 +74,12 @@ fun AdminCoachesScreen(
     onAddCoach: (CoachUser) -> Unit,
     onUpdateCoach: (CoachUser) -> Unit,
     onToggleCoachActive: (String) -> Unit,
+    onDeleteCoach: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var coachToEdit by remember { mutableStateOf<CoachUser?>(null) }
     var isAddDialogOpen by remember { mutableStateOf(false) }
+    var coachToDelete by remember { mutableStateOf<CoachUser?>(null) }
 
     Column(
         modifier = modifier
@@ -150,12 +157,23 @@ fun AdminCoachesScreen(
                                         .background(if (coach.isActive) JudoGold.copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.2f)),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(
-                                        imageVector = Icons.Default.SportsMartialArts,
-                                        contentDescription = null,
-                                        tint = if (coach.isActive) JudoGold else Color.Gray,
-                                        modifier = Modifier.size(26.dp)
-                                    )
+                                    if (coach.photoPath.isNotBlank()) {
+                                        AsyncImage(
+                                            model = coach.photoPath,
+                                            contentDescription = "Photo de ${coach.name}",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .size(46.dp)
+                                                .clip(CircleShape)
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = Icons.Default.SportsMartialArts,
+                                            contentDescription = null,
+                                            tint = if (coach.isActive) JudoGold else Color.Gray,
+                                            modifier = Modifier.size(26.dp)
+                                        )
+                                    }
                                 }
 
                                 Column(modifier = Modifier.weight(1f, fill = false)) {
@@ -206,9 +224,21 @@ fun AdminCoachesScreen(
                                 }
                             }
 
-                            // Edit Action
-                            IconButton(onClick = { coachToEdit = coach }) {
-                                Icon(Icons.Default.Edit, contentDescription = "Modifier", tint = JudoRed)
+                            // Edit & Delete Actions
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(onClick = { coachToEdit = coach }) {
+                                    Icon(Icons.Default.Edit, contentDescription = "Modifier", tint = JudoRed)
+                                }
+                                IconButton(
+                                    onClick = { coachToDelete = coach },
+                                    modifier = Modifier.testTag("delete_coach_${coach.id}")
+                                ) {
+                                    Icon(
+                                        Icons.Default.Delete,
+                                        contentDescription = "Supprimer",
+                                        tint = MaterialTheme.colorScheme.error
+                                    )
+                                }
                             }
                         }
 
@@ -351,6 +381,44 @@ fun AdminCoachesScreen(
             categories = categories,
             onSave = onUpdateCoach,
             onDismiss = { coachToEdit = null }
+        )
+    }
+
+    coachToDelete?.let { coach ->
+        AlertDialog(
+            onDismissRequest = { coachToDelete = null },
+            icon = {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.error
+                )
+            },
+            title = { Text("Supprimer le coach") },
+            text = {
+                Text(
+                    "Voulez-vous vraiment supprimer « ${coach.name} » ? " +
+                        "Cette action est irréversible et sera synchronisée avec le cloud."
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onDeleteCoach(coach.id)
+                        coachToDelete = null
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    )
+                ) {
+                    Text("Supprimer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { coachToDelete = null }) {
+                    Text("Annuler")
+                }
+            }
         )
     }
 }

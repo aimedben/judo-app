@@ -66,6 +66,7 @@ import com.example.data.model.Member
 import com.example.data.model.PastTrainingSession
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoGold
+import com.example.ui.theme.JudoGoldDark
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import kotlinx.coroutines.delay
@@ -155,7 +156,7 @@ fun AdminDashboardScreen(
         }
     }
 
-    Column(modifier = modifier.fillMaxSize()) {
+    Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         // Modern Header Bar
         AdminHeaderBar(
             clubSettings = clubSettings,
@@ -174,7 +175,9 @@ fun AdminDashboardScreen(
         BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
             val isTabletLandscape = maxWidth >= 720.dp
             val quickActionColumns = if (isTabletLandscape) 4 else 2
-            val coachAccentColor = if (isDarkTheme) JudoGold else Color(0xFFB45309)
+            // Gold is too light on white surfaces, so the light theme uses a darker amber.
+            val goldAccent = if (isDarkTheme) JudoGold else JudoGoldDark
+            val coachAccentColor = goldAccent
 
             LazyColumn(
                 modifier = Modifier
@@ -360,7 +363,7 @@ fun AdminDashboardScreen(
                             QuickActionItem("Ouvrir statistiques", "Graphiques & assiduité", Icons.Default.BarChart, Color(0xFFE91E63), onNavigateToStats),
                             QuickActionItem("Accéder aux exports", "Rapports CSV & bilans", Icons.Default.FileDownload, Color(0xFF795548), onNavigateToExports),
                             QuickActionItem("Paramètres du club", "Dojo, infos & thème", Icons.Default.Settings, Color(0xFF455A64), onNavigateToSettings),
-                            QuickActionItem("Supabase Cloud", "Synchronisation & Sauvegardes", Icons.Default.CloudSync, JudoGold, onOpenCloudSync)
+                            QuickActionItem("Supabase Cloud", "Synchronisation & Sauvegardes", Icons.Default.CloudSync, goldAccent, onOpenCloudSync)
                         )
 
                         // Adaptive grid chunking based on available width
@@ -452,7 +455,7 @@ fun AdminDashboardScreen(
                                             Text(
                                                 text = "Coach : ${session.coach1Name}",
                                                 style = MaterialTheme.typography.labelSmall.copy(
-                                                    color = JudoGold,
+                                                    color = goldAccent,
                                                     fontWeight = FontWeight.Medium
                                                 )
                                             )
