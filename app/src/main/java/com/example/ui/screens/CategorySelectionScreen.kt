@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.data.model.JudoCategory
+import com.example.data.model.JudoGroup
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoGoldBright
 import com.example.ui.theme.JudoInk
@@ -79,7 +80,17 @@ fun CategorySelectionScreen(
     onToggleTheme: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val activeCategories = categories.filter { it.isActive }
+    // The cards follow the athletes' age: youngest first (Éveil → Mini-Poussins → Poussins →
+    // Benjamins → Minimes → Cadets → Juniors/Séniors). The stored list can come in any order
+    // from the admin configuration, so the age rank is derived from the JUDO group enum here.
+    val activeCategories = categories
+        .filter { it.isActive }
+        .sortedWith(
+            compareBy(
+                { JudoGroup.fromString(it.groupCode).ordinal },
+                { it.name.lowercase() }
+            )
+        )
     val canvasColor = if (isDarkTheme) MaterialTheme.colorScheme.background else JudoWarmBackground
 
     Box(
