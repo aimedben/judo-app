@@ -207,22 +207,32 @@ object SportCardScanner {
                 }
             }
 
-            // Card Number / N°
+            // Card Number / N° (e.g. "N: 1", "N° 1", "N° de carte: 1", "Carte N° 1")
+            // The label MUST carry an explicit marker (° or a : / = separator) so that a
+            // plain word such as "Nom" or a name starting with "N" (e.g. "NASSIM") is never
+            // mistaken for the card number (which used to leak the athlete's name into the
+            // QR / card-number field).
             if (cardNumber.isBlank()) {
-                // Match "N° 1", "N: 1", "N° : 1", "N°:1", "Carte N° 1"
-                val nRegex = Regex("""(?:^|\s)(?:n°\s*:?|n\s*:?|n\.|carte\s*n°?|numéro|numero)\s*[:=.]?\s*([0-9a-zA-Z_-]+)""", RegexOption.IGNORE_CASE)
+                val nRegex = Regex(
+                    """(?:^|\s)(?:n\s*[°º]\s*(?:de\s+)?(?:carte|licence|cin)?|n\s*[:=]|num[eé]ro\s*(?:de\s+)?(?:carte|licence)?|carte\s*n\s*[°º]?|licence)\s*[:=.]?\s*([0-9A-Za-z_-]+)""",
+                    RegexOption.IGNORE_CASE
+                )
                 val match = nRegex.find(line)
                 if (match != null) {
                     val candidate = match.groupValues[1].trim()
-                    if (candidate.isNotEmpty() && !candidate.equals("seddouk", ignoreCase = true)) {
+                    if (candidate.isNotEmpty() && candidate.any { it.isDigit() } &&
+                        !candidate.equals("seddouk", ignoreCase = true)
+                    ) {
                         cardNumber = candidate
                     }
                 } else {
-                    // Check if line is just "N°" or "N° :" and the number is on the NEXT line
-                    val isNHeader = lower.matches(Regex("""^(?:n°|n|n\.|carte\s*n°?|numéro|numero)\s*[:=.]?$"""))
+                    // Header on its own line ("N°", "N:", "N° de carte") with the number below
+                    val isNHeader = lower.matches(
+                        Regex("""^(?:n\s*[°º]|n\s*[:=]|num[eé]ro|carte\s*n\s*[°º]?|licence)\s*(?:de\s*)?(?:carte|licence|cin)?\s*[:=.]?$""")
+                    )
                     if (isNHeader && i + 1 < lines.size) {
                         val next = lines[i + 1].trim()
-                        if (next.matches(Regex("""^[0-9a-zA-Z_-]{1,15}$"""))) {
+                        if (next.matches(Regex("""^[0-9A-Za-z_-]{1,15}$""")) && next.any { it.isDigit() }) {
                             cardNumber = next
                         }
                     }
@@ -391,6 +401,16 @@ object SportCardScanner {
             }
         }
 
+        // If a full name landed in the first-name slot (e.g. "Nom & Prénom: ANIS BOURENANE"),
+        // split it and move the surname to the last-name slot.
+        if (lastName.isBlank() && firstName.contains(' ')) {
+            val (f, l) = parseFirstAndLastName(firstName)
+            if (f.isNotBlank() && l.isNotBlank()) {
+                firstName = f
+                lastName = l
+            }
+        }
+
         // Global fallback for date across whole text if line loop missed it
         if (birthDate.isBlank()) {
             val allDates = Regex("""([0-9]{4}\s*[-/.]\s*[0-9]{1,2}\s*[-/.]\s*[0-9]{1,2}|[0-9]{1,2}\s*[-/.]\s*[0-9]{1,2}\s*[-/.]\s*[0-9]{4})""").findAll(rawText)
@@ -500,22 +520,22 @@ object SportCardScanner {
     fun normalizeDate(rawDate: String): String {
         val clean = rawDate.trim()
         if (clean.isBlank()) return ""
-        // Check YYYY-MM-DD (with optional spaces around separator)
-        val ymd = Regex("""(\d{4})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{1,2})""").find(clean)
-        if (ymd != null) {
-            val y = ymd.groupValues[1]
-            val m = ymd.groupValues[2].padStart(2, '0')
-            val d = ymd.groupValues[3].padStart(2, '0')
-            return "$y-$m-$d"
+        // Year first: YYYY MM DD (separator may be space, -, / or .).
+        Regex("""(\d{4})\s*[-/.\s]\s*(\d{1,2})\s*[-/.\s]\s*(\d{1,2})""").find(clean)?.let {
+            val y = it.groupValues[1].toInt()
+            val mo = it.groupValues[2].toInt()
+            val d = it.groupValues[3].toInt()
+            if (mo in 1..12 && d in 1..31) return "%04d-%02d-%02d".format(y, mo, d)
         }
-        // Check DD/MM/YYYY (with optional spaces around separator)
-        val dmy = Regex("""(\d{1,2})\s*[-/.]\s*(\d{1,2})\s*[-/.]\s*(\d{4})""").find(clean)
-        if (dmy != null) {
-            val d = dmy.groupValues[1].padStart(2, '0')
-            val m = dmy.groupValues[2].padStart(2, '0')
-            val y = dmy.groupValues[3]
-            return "$y-$m-$d"
+        // Day first: DD MM YYYY.
+        Regex("""(\d{1,2})\s*[-/.\s]\s*(\d{1,2})\s*[-/.\s]\s*(\d{4})""").find(clean)?.let {
+            val d = it.groupValues[1].toInt()
+            val mo = it.groupValues[2].toInt()
+            val y = it.groupValues[3].toInt()
+            if (mo in 1..12 && d in 1..31 && y in 1900..2100) return "%04d-%02d-%02d".format(y, mo, d)
         }
-        return clean
+        // No usable date found: never return a stray number (e.g. a card number read on a
+        // line following a "Né(e) le" header) — return blank instead.
+        return ""
     }
 }
