@@ -1073,6 +1073,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastScannedCode: String = ""
     private var lastScannedTimestamp: Long = 0L
 
+    // Secondary guard only: the douchette receiver already prevents a single read from
+    // being delivered twice. Never rely on this delay as the sole protection.
+    private val SCAN_DUPLICATE_WINDOW_MS = 800L
+
     init {
         viewModelScope.launch {
             if (!prefs.getBoolean("has_initialized_db", false)) {
@@ -1107,15 +1111,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var isProcessingScan: Boolean = false
 
     fun onQrScanned(code: String) {
-        val now = System.currentTimeMillis()
         val clean = code.trim()
         if (clean.isBlank()) return
 
-        // Debounce exact duplicate scan within 800ms
-        if (clean == lastScannedCode && (now - lastScannedTimestamp) < 800) {
+        // The scanner already guarantees a single delivery per physical read; this lock
+        // and the identical-code guard are defence in depth against a retransmitted read.
+        if (isProcessingScan) return
+        val now = System.currentTimeMillis()
+        if (clean == lastScannedCode && (now - lastScannedTimestamp) < SCAN_DUPLICATE_WINDOW_MS) {
             return
         }
-        if (isProcessingScan) return
 
         isProcessingScan = true
         lastScannedCode = clean
@@ -1124,12 +1129,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 val sessionStart = _activeSession.value?.startTimestamp
-                val result = repository.processCheckIn(clean, "QR_SCAN", sessionStart)
+                var result = repository.processCheckIn(clean, "QR_SCAN", sessionStart)
+                if (result is CheckInResult.UnknownQr) {
+                    result = tryAutoRegisterAndCheckIn(clean) ?: result
+                }
+                // One read ⇒ exactly one feedback, one vibration, one sound.
                 triggerHapticFeedback(result)
                 when (result) {
                     is CheckInResult.Success -> emitCheckInSuccess(result)
                     is CheckInResult.AlreadyCheckedIn -> emitAlreadyChecked(result)
-                    is CheckInResult.UnknownQr -> handleUnknownQr(clean)
+                    is CheckInResult.UnknownQr -> emitUnknownQr(clean, result)
                     is CheckInResult.Error -> {
                         _activeCheckInResult.value = result
                         _coachScanFeedback.value = CoachScanFeedback.Invalid(result.message)
@@ -1142,47 +1151,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** Incomplete douchette read (too short / interrupted): a single, non-vibrating hint. */
+    fun onIncompleteScan() {
+        if (isProcessingScan) return
+        _activeCheckInResult.value = null
+        _coachScanFeedback.value = CoachScanFeedback.Invalid("Lecture incomplète, veuillez rescanner")
+    }
+
     /**
-     * Unknown code: try to auto-register the athlete from the scanned sports card and
-     * immediately check them in. When the code carries no usable identity, fall back to
-     * the manual flows (unassigned QR / prefilled creation dialog).
+     * Unknown code carrying a full identity: create the athlete from the scanned sports
+     * card and return the check-in result for the freshly created member. Returns null
+     * when the code carries no usable identity (the manual flows are used instead).
      */
-    private suspend fun handleUnknownQr(rawCode: String) {
+    private suspend fun tryAutoRegisterAndCheckIn(rawCode: String): CheckInResult? {
         val extracted = CardDataParser.parseCardData(rawCode)
         val hasFullName = extracted.firstName.isNotBlank() && extracted.lastName.isNotBlank()
+        if (!hasFullName) return null
 
-        if (hasFullName) {
-            val created = repository.registerMemberFromCard(rawCode)
-            if (created != null) {
-                // Re-run the check-in now that the member exists in the database.
-                val retry = repository.processCheckIn(
-                    rawCode,
-                    "QR_SCAN",
-                    _activeSession.value?.startTimestamp
-                )
-                triggerHapticFeedback(retry)
-                when (retry) {
-                    is CheckInResult.Success -> emitCheckInSuccess(retry)
-                    is CheckInResult.AlreadyCheckedIn -> emitAlreadyChecked(retry)
-                    else -> {
-                        _activeCheckInResult.value = retry
-                        _coachScanFeedback.value = CoachScanFeedback.Invalid(
-                            "Athlète « ${created.fullName} » enregistré, pointage à confirmer"
-                        )
-                        playScanSound(false)
-                    }
-                }
-                return
-            }
+        val created = repository.registerMemberFromCard(rawCode) ?: return null
+        val retry = repository.processCheckIn(rawCode, "QR_SCAN", _activeSession.value?.startTimestamp)
+        return if (retry is CheckInResult.UnknownQr) {
+            CheckInResult.Error("Athlète « ${created.fullName} » enregistré, pointage à confirmer")
+        } else {
+            retry
         }
+    }
 
-        // Partial identity (missing a name) or non-card code → keep the manual flows.
+    /**
+     * No member matches the complete code: fall back to the manual flows (unassigned QR
+     * or prefilled creation dialog) and show a single "not recognised" message.
+     */
+    private fun emitUnknownQr(rawCode: String, result: CheckInResult.UnknownQr) {
+        val extracted = CardDataParser.parseCardData(rawCode)
         if (extracted.firstName.isNotBlank() || extracted.lastName.isNotBlank()) {
             _scannedMemberForCreation.value = extracted
         } else {
             _unassignedQrCode.value = rawCode
         }
-        _activeCheckInResult.value = CheckInResult.UnknownQr(rawCode)
+        _activeCheckInResult.value = result
         _coachScanFeedback.value = CoachScanFeedback.Invalid("QR code non reconnu dans le club")
         playScanSound(false)
     }

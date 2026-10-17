@@ -117,6 +117,7 @@ import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.SportsMartialArts
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.MyApplicationTheme
+import com.example.util.DouchetteReceiver
 
 enum class ScreenTab(val label: String, val icon: ImageVector) {
     HOME("Accueil", Icons.Default.Dashboard),
@@ -128,40 +129,61 @@ enum class ScreenTab(val label: String, val icon: ImageVector) {
 
 class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
-    private val douchetteBuffer = StringBuilder()
-    private var lastDouchetteKeyTime = 0L
+
+    // Single receiver for the USB / Bluetooth HID barcode scanner ("douchette").
+    // It accumulates the whole code and fires exactly once per physical read — either on
+    // the scanner's Enter suffix, or after an inactivity timeout when no suffix is sent.
+    // This replaces the previous two competing receivers (the Activity buffer and a hidden
+    // text field) that used to process a long QR code several times while it was still
+    // being transmitted.
+    private val douchette = DouchetteReceiver(
+        onCode = { code -> viewModel.onQrScanned(code) },
+        onIncomplete = { viewModel.onIncompleteScan() }
+    )
 
     override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        // Intercept hardware keys from Bluetooth HID or USB OTG douchette (barcode scanner)
-        // This processes scans immediately without opening any soft keyboard or requiring text fields!
-        if (event.action == android.view.KeyEvent.ACTION_DOWN) {
-            val hasActiveSession = viewModel.activeSession.value != null
-            if (hasActiveSession) {
-                val now = System.currentTimeMillis()
-                // Reset buffer if more than 1.5 seconds elapsed between scans
-                if (now - lastDouchetteKeyTime > 1500L) {
-                    douchetteBuffer.setLength(0)
-                }
-                lastDouchetteKeyTime = now
+        // Only capture hardware keys while a training session is running. Soft-keyboard
+        // input goes through the InputConnection (not dispatchKeyEvent), so normal typing
+        // in dialogs and text fields is never affected.
+        if (viewModel.activeSession.value == null) {
+            douchette.reset()
+            return super.dispatchKeyEvent(event)
+        }
 
-                if (event.keyCode == android.view.KeyEvent.KEYCODE_ENTER ||
-                    event.keyCode == android.view.KeyEvent.KEYCODE_NUMPAD_ENTER
-                ) {
-                    val code = douchetteBuffer.toString().trim()
-                    douchetteBuffer.setLength(0)
-                    if (code.isNotBlank()) {
-                        viewModel.onQrScanned(code)
-                        return true
-                    }
-                } else {
+        when (event.keyCode) {
+            android.view.KeyEvent.KEYCODE_ENTER,
+            android.view.KeyEvent.KEYCODE_NUMPAD_ENTER,
+            android.view.KeyEvent.KEYCODE_TAB -> {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) {
+                    douchette.feedTerminator()
+                }
+                return true
+            }
+
+            android.view.KeyEvent.KEYCODE_BACK,
+            android.view.KeyEvent.KEYCODE_ESCAPE -> {
+                douchette.reset()
+                return super.dispatchKeyEvent(event)
+            }
+
+            else -> {
+                if (event.action == android.view.KeyEvent.ACTION_DOWN) {
                     val unicode = event.getUnicodeChar(event.metaState)
                     if (unicode != 0 && !Character.isISOControl(unicode)) {
-                        douchetteBuffer.append(unicode.toChar())
+                        douchette.feedChar(unicode.toChar())
+                        return true
+                    }
+                } else if (event.action == android.view.KeyEvent.ACTION_MULTIPLE) {
+                    @Suppress("DEPRECATION")
+                    val chars = event.characters
+                    if (!chars.isNullOrEmpty()) {
+                        douchette.feedString(chars)
+                        return true
                     }
                 }
+                return super.dispatchKeyEvent(event)
             }
         }
-        return super.dispatchKeyEvent(event)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -435,7 +457,6 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             sessionAttendances = sessionAttendances,
                             scanFeedback = coachScanFeedback,
                             onOpenScanner = { isCoachCameraScannerOpen = true },
-                            onQrScanned = { code -> viewModel.onQrScanned(code) },
                             onManualCheckInMember = { member -> viewModel.manualCheckIn(member.id) },
                             onFinishSession = { isSessionSummaryShown = true },
                             onDismissFeedback = { viewModel.clearCoachScanFeedback() }

@@ -15,7 +15,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,9 +32,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.text.KeyboardActions
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -72,23 +68,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.input.key.Key
-import androidx.compose.ui.input.key.KeyEventType
-import androidx.compose.ui.input.key.key
-import androidx.compose.ui.input.key.onPreviewKeyEvent
-import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -126,7 +111,6 @@ fun CoachSessionPointageScreen(
     sessionAttendances: List<AttendanceWithMember>,
     scanFeedback: CoachScanFeedback?,
     onOpenScanner: () -> Unit,
-    onQrScanned: (String) -> Unit,
     onManualCheckInMember: (Member) -> Unit,
     onFinishSession: () -> Unit,
     onDismissFeedback: () -> Unit,
@@ -139,19 +123,6 @@ fun CoachSessionPointageScreen(
 
     var isManualCheckInDialogOpen by remember { mutableStateOf(false) }
     var statDetailMode by remember { mutableStateOf<StatDetailMode?>(null) }
-
-    // Hidden input dedicated to USB/Bluetooth barcode scanners ("douchette").
-    val douchetteFocusRequester = remember { FocusRequester() }
-    var douchetteBuffer by remember { mutableStateOf("") }
-
-    LaunchedEffect(isManualCheckInDialogOpen) {
-        if (!isManualCheckInDialogOpen && session.isExternalScannerMode) {
-            try {
-                douchetteFocusRequester.requestFocus()
-            } catch (_: Exception) {
-            }
-        }
-    }
 
     // Auto-return to "Prêt à scanner" after 1-second feedback display
     LaunchedEffect(scanFeedback) {
@@ -169,80 +140,10 @@ fun CoachSessionPointageScreen(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null
-            ) {
-                if (!isManualCheckInDialogOpen) {
-                    try { douchetteFocusRequester.requestFocus() } catch (_: Exception) {}
-                }
-            }
             .padding(16.dp)
             .testTag("coach_pointage_screen"),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Hidden field capturing hardware barcode scanner input (douchette).
-        if (session.isExternalScannerMode) {
-            BasicTextField(
-                value = douchetteBuffer,
-                onValueChange = { newValue ->
-                    if (newValue.contains('\n') || newValue.contains('\r')) {
-                        val code = newValue.replace("\n", "").replace("\r", "").trim()
-                        if (code.isNotBlank()) {
-                            onQrScanned(code)
-                        }
-                        douchetteBuffer = ""
-                    } else {
-                        // Only append if buffer is small (avoid piling up)
-                        if (newValue.length <= 50) {
-                            douchetteBuffer = newValue
-                        } else {
-                            // If too long, treat as complete
-                            val code = newValue.trim()
-                            if (code.isNotBlank()) onQrScanned(code)
-                            douchetteBuffer = ""
-                        }
-                    }
-                },
-                singleLine = true,
-                textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                keyboardActions = KeyboardActions(
-                    onDone = {
-                        if (douchetteBuffer.isNotBlank()) {
-                            onQrScanned(douchetteBuffer.trim())
-                            douchetteBuffer = ""
-                        }
-                    }
-                ),
-                modifier = Modifier
-                    .size(1.dp)
-                    .alpha(0f)
-                    .focusRequester(douchetteFocusRequester)
-                    .onFocusChanged { focusState ->
-                        if (!focusState.isFocused && !isManualCheckInDialogOpen) {
-                            try {
-                                douchetteFocusRequester.requestFocus()
-                            } catch (_: Exception) {
-                            }
-                        }
-                    }
-                    .onPreviewKeyEvent { event ->
-                        if (event.type == KeyEventType.KeyDown &&
-                            (event.key == Key.Enter || event.key == Key.NumPadEnter)
-                        ) {
-                            if (douchetteBuffer.isNotBlank()) {
-                                onQrScanned(douchetteBuffer.trim())
-                                douchetteBuffer = ""
-                            }
-                            true
-                        } else {
-                            false
-                        }
-                    }
-            )
-        }
-
         // Top Header: Category & Start Time
         Card(
             shape = RoundedCornerShape(16.dp),
