@@ -1,5 +1,6 @@
-package com.example.ui.screens
 
+package com.example.ui.screens
+ 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
@@ -67,6 +68,15 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.utf16CodePoint
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -87,11 +97,12 @@ import com.example.ui.components.AbsentSmsDialog
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.DouchetteReceiver
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
+ 
 /**
  * Screen 3 — Pointage (Check-in during training)
  * Essential stats: presents, absents, attendance rate.
@@ -116,34 +127,100 @@ fun CoachSessionPointageScreen(
     onManualCheckInMember: (Member) -> Unit,
     onFinishSession: () -> Unit,
     onDismissFeedback: () -> Unit,
+    /**
+     * Appelé à chaque scan (caméra ou douchette) avec UNIQUEMENT le numéro "N12345"
+     * extrait du QR code, ou null si le QR ne contient pas de numéro N valide.
+     * Le ViewModel retrouve ensuite le judoka avec ce numéro.
+     */
+    onNumeroScanned: (String?) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val totalCount = categoryMembers.size
     val presentCount = sessionAttendances.size
     val absentCount = (totalCount - presentCount).coerceAtLeast(0)
     val attendanceRate = if (totalCount > 0) ((presentCount.toDouble() / totalCount.toDouble()) * 100).toInt() else 0
-
+ 
     var isManualCheckInDialogOpen by remember { mutableStateOf(false) }
     var statDetailMode by remember { mutableStateOf<StatDetailMode?>(null) }
-
-    // Auto-return to "Prêt à scanner" after 1-second feedback display
+ 
+    // Résultat réellement affiché à l'écran.
+    // - QR invalide : aucun message, on reste sur "Prêt à scanner".
+    // - Scan détecté (SUCCESS / AlreadyChecked) : l'athlète apparaît IMMÉDIATEMENT au centre,
+    //   à la place de l'animation radar, avec une grande photo de profil, puis la carte
+    //   revient sur "Douchette prête".
+    // - Catégorie refusée : fenêtre plus longue pour laisser le temps de lire.
+    var displayedFeedback by remember { mutableStateOf<CoachScanFeedback?>(null) }
     LaunchedEffect(scanFeedback) {
-        if (scanFeedback != null) {
-            delay(1000)
-            onDismissFeedback()
+        when (scanFeedback) {
+            null -> displayedFeedback = null
+            is CoachScanFeedback.Invalid -> {
+                displayedFeedback = null
+                onDismissFeedback()
+            }
+            else -> {
+                // Affichage immédiat : aucune attente de radar avant la photo.
+                displayedFeedback = scanFeedback
+                val holdMs = if (scanFeedback is CoachScanFeedback.WrongCategory) 2500L else 2200L
+                delay(holdMs)
+                displayedFeedback = null
+                onDismissFeedback()
+            }
         }
     }
-
+    val shownFeedback = displayedFeedback
+ 
     val presentMemberIds = remember(sessionAttendances) {
         sessionAttendances.map { it.memberId }.toSet()
     }
-
+ 
+    // Mode douchette HID : la douchette "tape" le QR comme un clavier puis envoie Entrée.
+    val scanBuffer = remember { StringBuilder() }
+    val focusRequester = remember { FocusRequester() }
+    LaunchedEffect(session.isExternalScannerMode, isManualCheckInDialogOpen) {
+        if (session.isExternalScannerMode && !isManualCheckInDialogOpen) {
+            runCatching { focusRequester.requestFocus() }
+        }
+    }
+ 
     Column(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
             .padding(16.dp)
-            .testTag("coach_pointage_screen"),
+            .testTag("coach_pointage_screen")
+            .then(
+                if (session.isExternalScannerMode) {
+                    Modifier
+                        .focusRequester(focusRequester)
+                        .focusable()
+                        .onPreviewKeyEvent { event ->
+                            if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                            when (event.key) {
+                                Key.Enter, Key.NumPadEnter -> {
+                                    if (scanBuffer.isNotEmpty()) {
+                                        // Le QR de la carte est multi-ligne : la première ligne ne
+                                        // porte que le nom du club. On transmet donc le payload tel
+                                        // quel (normalisé comme le fait la douchette HID) pour que
+                                        // les parseurs de carte y trouvent la ligne du numéro
+                                        // ("N: 121"), au lieu de signaler un QR invalide à chaque
+                                        // retour à la ligne.
+                                        val payload = DouchetteReceiver.normalizePayload(scanBuffer.toString())
+                                        scanBuffer.clear()
+                                        if (payload.isNotBlank()) onNumeroScanned(payload)
+                                    }
+                                    true
+                                }
+                                else -> {
+                                    val cp = event.utf16CodePoint
+                                    if (cp > 0) {
+                                        scanBuffer.append(cp.toChar())
+                                        true
+                                    } else false
+                                }
+                            }
+                        }
+                } else Modifier
+            ),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         // Top Header: Category & Start Time
@@ -174,7 +251,7 @@ fun CoachSessionPointageScreen(
                         )
                     )
                 }
-
+ 
                 Surface(
                     shape = RoundedCornerShape(10.dp),
                     color = JudoRed.copy(alpha = 0.12f),
@@ -202,7 +279,7 @@ fun CoachSessionPointageScreen(
                 }
             }
         }
-
+ 
         // Essential Stats: Présents | Absents | Taux (clickables → liste des athlètes)
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -236,17 +313,18 @@ fun CoachSessionPointageScreen(
                 onClick = { statDetailMode = StatDetailMode.ALL }
             )
         }
-
+ 
         // 1. & 3. Central Scan Zone with Concentric Red Ripples & Real-Time Feedback
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = BorderStroke(
                 1.dp,
-                when (scanFeedback) {
+                when (shownFeedback) {
                     is CoachScanFeedback.Success -> JudoSuccess.copy(alpha = 0.6f)
                     is CoachScanFeedback.AlreadyChecked -> Color(0xFF1976D2).copy(alpha = 0.5f)
                     is CoachScanFeedback.Invalid -> MaterialTheme.colorScheme.error.copy(alpha = 0.5f)
+                    is CoachScanFeedback.WrongCategory -> Color(0xFFE65100).copy(alpha = 0.6f)
                     null -> MaterialTheme.colorScheme.outline.copy(alpha = 0.2f)
                 }
             ),
@@ -263,30 +341,31 @@ fun CoachSessionPointageScreen(
             ) {
                 // Radar Animation
                 ConcentricRipplesRadar(
-                    isScanning = scanFeedback == null,
-                    accentColor = when (scanFeedback) {
+                    isScanning = shownFeedback == null,
+                    accentColor = when (shownFeedback) {
                         is CoachScanFeedback.Success -> JudoSuccess
                         is CoachScanFeedback.AlreadyChecked -> Color(0xFF1976D2)
                         is CoachScanFeedback.Invalid -> MaterialTheme.colorScheme.error
+                        is CoachScanFeedback.WrongCategory -> Color(0xFFE65100)
                         null -> JudoRed
                     }
                 ) {
-                    when (scanFeedback) {
+                    when (shownFeedback) {
                         is CoachScanFeedback.Success -> {
-                            // Confirmation window: the athlete's profile photo circled in green.
+                            // Confirmation au centre : grande photo de profil cerclée de vert.
                             Box {
                                 JudokaAvatar(
-                                    name = scanFeedback.member.fullName,
-                                    belt = scanFeedback.member.belt,
-                                    photoUrl = scanFeedback.member.photoUrl,
-                                    sizeDp = 58,
+                                    name = shownFeedback.member.fullName,
+                                    belt = shownFeedback.member.belt,
+                                    photoUrl = shownFeedback.member.photoUrl,
+                                    sizeDp = 128,
                                     borderColor = JudoSuccess,
-                                    borderWidth = 3.dp
+                                    borderWidth = 4.dp
                                 )
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
-                                        .size(20.dp)
+                                        .size(32.dp)
                                         .clip(CircleShape)
                                         .background(JudoSuccess),
                                     contentAlignment = Alignment.Center
@@ -295,26 +374,26 @@ fun CoachSessionPointageScreen(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = "Validé",
                                         tint = Color.White,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }
                         }
                         is CoachScanFeedback.AlreadyChecked -> {
-                            // Same confirmation, blue ring: the athlete was already pointed.
+                            // Même confirmation, anneau bleu : l'athlète était déjà pointé.
                             Box {
                                 JudokaAvatar(
-                                    name = scanFeedback.member.fullName,
-                                    belt = scanFeedback.member.belt,
-                                    photoUrl = scanFeedback.member.photoUrl,
-                                    sizeDp = 58,
+                                    name = shownFeedback.member.fullName,
+                                    belt = shownFeedback.member.belt,
+                                    photoUrl = shownFeedback.member.photoUrl,
+                                    sizeDp = 128,
                                     borderColor = Color(0xFF1976D2),
-                                    borderWidth = 3.dp
+                                    borderWidth = 4.dp
                                 )
                                 Box(
                                     modifier = Modifier
                                         .align(Alignment.BottomEnd)
-                                        .size(20.dp)
+                                        .size(32.dp)
                                         .clip(CircleShape)
                                         .background(Color(0xFF1976D2)),
                                     contentAlignment = Alignment.Center
@@ -323,9 +402,25 @@ fun CoachSessionPointageScreen(
                                         imageVector = Icons.Default.Check,
                                         contentDescription = "Déjà présent",
                                         tint = Color.White,
-                                        modifier = Modifier.size(14.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
+                            }
+                        }
+                        is CoachScanFeedback.WrongCategory -> {
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xFFE65100)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Warning,
+                                    contentDescription = "Mauvaise catégorie",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(30.dp)
+                                )
                             }
                         }
                         is CoachScanFeedback.Invalid -> {
@@ -362,10 +457,10 @@ fun CoachSessionPointageScreen(
                         }
                     }
                 }
-
+ 
                 // Text status / Athlete feedback
                 AnimatedContent(
-                    targetState = scanFeedback,
+                    targetState = shownFeedback,
                     transitionSpec = {
                         fadeIn(animationSpec = tween(200)) togetherWith fadeOut(animationSpec = tween(150))
                     },
@@ -449,22 +544,48 @@ fun CoachSessionPointageScreen(
                                     )
                                 }
                             }
+                            is CoachScanFeedback.WrongCategory -> {
+                                Text(
+                                    text = feedback.member.fullName,
+                                    style = MaterialTheme.typography.titleLarge.copy(
+                                        fontWeight = FontWeight.Black,
+                                        fontSize = 19.sp
+                                    ),
+                                    color = Color(0xFFE65100),
+                                    textAlign = TextAlign.Center
+                                )
+                                Surface(
+                                    shape = RoundedCornerShape(10.dp),
+                                    color = Color(0xFFE65100).copy(alpha = 0.14f),
+                                    border = BorderStroke(1.dp, Color(0xFFE65100).copy(alpha = 0.5f))
+                                ) {
+                                    Text(
+                                        text = "N'appartient pas à cette catégorie",
+                                        style = MaterialTheme.typography.labelLarge.copy(
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFFBF360C)
+                                        ),
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    )
+                                }
+                                Text(
+                                    text = "Athlète : ${feedback.memberGroupLabel}" +
+                                        if (feedback.sessionCategoryName.isNotBlank()) {
+                                            " • Séance : ${feedback.sessionCategoryName}"
+                                        } else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                                Text(
+                                    text = "Pointage refusé",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = MaterialTheme.colorScheme.error
+                                )
+                            }
                             is CoachScanFeedback.Invalid -> {
-                                Text(
-                                    text = "QR code non reconnu",
-                                    style = MaterialTheme.typography.titleMedium.copy(
-                                        fontWeight = FontWeight.Bold
-                                    ),
-                                    color = MaterialTheme.colorScheme.error,
-                                    textAlign = TextAlign.Center
-                                )
-                                Text(
-                                    text = feedback.message.ifBlank { "Ce code ne correspond à aucun athlète enregistré" },
-                                    style = MaterialTheme.typography.bodySmall.copy(
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    ),
-                                    textAlign = TextAlign.Center
-                                )
+                                // Aucun message : un QR invalide est ignoré silencieusement.
                             }
                             null -> {
                                 Text(
@@ -490,9 +611,10 @@ fun CoachSessionPointageScreen(
                             }
                         }
                     }
+                }
             }
         }
-
+ 
         // Actions Row: "Scanner avec caméra" & "Pointage manuel"
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -528,7 +650,7 @@ fun CoachSessionPointageScreen(
                     )
                 }
             }
-
+ 
             OutlinedButton(
                 onClick = { isManualCheckInDialogOpen = true },
                 shape = RoundedCornerShape(14.dp),
@@ -558,7 +680,7 @@ fun CoachSessionPointageScreen(
                 }
             }
         }
-
+ 
         // Recent Scans / Check-ins
         Text(
             text = "Derniers pointages (${sessionAttendances.size})",
@@ -566,7 +688,7 @@ fun CoachSessionPointageScreen(
                 fontWeight = FontWeight.Bold
             )
         )
-
+ 
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
@@ -600,25 +722,25 @@ fun CoachSessionPointageScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(12.dp),
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
                             ) {
                                 JudokaAvatar(
                                     name = attendance.fullName,
                                     belt = attendance.belt,
                                     photoUrl = attendance.photoUrl,
-                                    sizeDp = 38
+                                    sizeDp = 72
                                 )
                                 Column {
                                     Text(
                                         text = attendance.fullName,
-                                        style = MaterialTheme.typography.bodyLarge.copy(
-                                            fontWeight = FontWeight.SemiBold
+                                        style = MaterialTheme.typography.titleMedium.copy(
+                                            fontWeight = FontWeight.Bold
                                         )
                                     )
                                     Text(
@@ -629,7 +751,7 @@ fun CoachSessionPointageScreen(
                                     )
                                 }
                             }
-
+ 
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = JudoSuccess.copy(alpha = 0.15f)
@@ -648,7 +770,7 @@ fun CoachSessionPointageScreen(
                 }
             }
         }
-
+ 
         // Finish Session Button
         OutlinedButton(
             onClick = onFinishSession,
@@ -675,7 +797,7 @@ fun CoachSessionPointageScreen(
             )
         }
     }
-
+ 
     // Modal Dialog: Pointage Manuel (Judoka absent du scan ou carte oubliée)
     if (isManualCheckInDialogOpen) {
         var manualSearchQuery by remember { mutableStateOf("") }
@@ -686,7 +808,7 @@ fun CoachSessionPointageScreen(
                     manualSearchQuery.isBlank() || it.fullName.contains(manualSearchQuery, ignoreCase = true)
                 }
         }
-
+ 
         AlertDialog(
             onDismissRequest = { isManualCheckInDialogOpen = false },
             title = {
@@ -711,14 +833,14 @@ fun CoachSessionPointageScreen(
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.fillMaxWidth()
                     )
-
+ 
                     Text(
                         text = "Judokas non encore pointés (${absentMembers.size}) :",
                         style = MaterialTheme.typography.labelMedium.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     )
-
+ 
                     LazyColumn(
                         modifier = Modifier.weight(1f),
                         verticalArrangement = Arrangement.spacedBy(6.dp)
@@ -755,7 +877,7 @@ fun CoachSessionPointageScreen(
                                         verticalAlignment = Alignment.CenterVertically,
                                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                                     ) {
-                                        JudokaAvatar(name = member.fullName, belt = member.belt, sizeDp = 30)
+                                        JudokaAvatar(name = member.fullName, belt = member.belt, photoUrl = member.photoUrl, sizeDp = 30)
                                         Column {
                                             Text(member.fullName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                                             Text("Ceinture ${member.beltName.lowercase()}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -775,7 +897,7 @@ fun CoachSessionPointageScreen(
             }
         )
     }
-
+ 
     if (statDetailMode != null) {
         StatAthletesDialog(
             mode = statDetailMode!!,
@@ -785,8 +907,7 @@ fun CoachSessionPointageScreen(
         )
     }
 }
-}
-
+ 
 /**
  * Screen 4 — Fin de séance (Récapitulatif officiel)
  * Displays:
@@ -801,50 +922,52 @@ fun CoachSessionSummaryScreen(
     session: ActiveTrainingSession,
     categoryMembers: List<Member>,
     sessionAttendances: List<AttendanceWithMember>,
-    onValidateAndSave: (String) -> Unit,
-    modifier: Modifier = Modifier,
+onValidateAndSave: (String) -> Unit,
+onCancelSession: () -> Unit = {},
+modifier: Modifier = Modifier,
     clubName: String = ""
 ) {
     val totalCount = categoryMembers.size
     val presentCount = sessionAttendances.size
     val absentCount = (totalCount - presentCount).coerceAtLeast(0)
     val attendanceRate = if (totalCount > 0) ((presentCount.toDouble() / totalCount.toDouble()) * 100).toInt() else 0
-
+ 
     var selectedTabIndex by remember { mutableIntStateOf(0) }
     var endTimeString by remember { mutableStateOf("") }
     var showSmsDialog by remember { mutableStateOf(false) }
-
+ 
     LaunchedEffect(Unit) {
         val sdf = SimpleDateFormat("HH:mm", Locale.FRENCH)
         endTimeString = sdf.format(Date())
     }
-
+ 
     val presentMemberIds = remember(sessionAttendances) {
         sessionAttendances.map { it.memberId }.toSet()
     }
-
+ 
     val presentMembers = remember(sessionAttendances) {
         sessionAttendances.map { it.fullName }
     }
-
+ 
     // Absent athletes = members of THIS session's category who were not scanned as present.
     val absentMemberObjects = remember(categoryMembers, presentMemberIds) {
         categoryMembers.filter { it.id !in presentMemberIds }
     }
-
+ 
     val absentMembers = remember(absentMemberObjects) {
         absentMemberObjects.map { it.fullName }
     }
-
+ 
     if (showSmsDialog) {
         AbsentSmsDialog(
             absentMembers = absentMemberObjects,
             sessionDate = session.startDate,
+            sessionStartTime = session.startTime,
             clubName = clubName,
             onDismiss = { showSmsDialog = false }
         )
     }
-
+ 
     val presentCoaches = remember(session) {
         val list = mutableListOf<String>()
         if (session.coach1Present) list.add(session.coach1Name)
@@ -852,7 +975,7 @@ fun CoachSessionSummaryScreen(
         if (list.isEmpty()) list.add("Aucun coach consigné")
         list.joinToString(" • ")
     }
-
+ 
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -883,25 +1006,25 @@ fun CoachSessionSummaryScreen(
                         modifier = Modifier.size(32.dp)
                     )
                 }
-
+ 
                 Spacer(modifier = Modifier.height(12.dp))
-
+ 
                 Text(
                     text = "Séance terminée",
                     style = MaterialTheme.typography.headlineMedium.copy(
                         fontWeight = FontWeight.Black
                     )
                 )
-
+ 
                 Text(
                     text = "Récapitulatif officiel • ${session.categoryName}",
                     style = MaterialTheme.typography.bodyMedium.copy(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 )
-
+ 
                 Spacer(modifier = Modifier.height(16.dp))
-
+ 
                 // Summary Stats Card
                 Card(
                     shape = RoundedCornerShape(18.dp),
@@ -928,7 +1051,7 @@ fun CoachSessionSummaryScreen(
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
                             )
                         }
-
+ 
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
@@ -942,14 +1065,14 @@ fun CoachSessionSummaryScreen(
                                 style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
                             )
                         }
-
+ 
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(1.dp)
                                 .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
                         )
-
+ 
                         // 3 Stats Pills
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -976,9 +1099,9 @@ fun CoachSessionSummaryScreen(
                         }
                     }
                 }
-
+ 
                 Spacer(modifier = Modifier.height(14.dp))
-
+ 
                 // Tabs for Presents and Absents list
                 TabRow(
                     selectedTabIndex = selectedTabIndex,
@@ -997,9 +1120,9 @@ fun CoachSessionSummaryScreen(
                         text = { Text("Absents ($absentCount)", fontWeight = FontWeight.Bold) }
                     )
                 }
-
+ 
                 Spacer(modifier = Modifier.height(8.dp))
-
+ 
                 // Scrollable List of presents / absents
                 LazyColumn(
                     modifier = Modifier
@@ -1050,7 +1173,7 @@ fun CoachSessionSummaryScreen(
                     }
                 }
             }
-
+ 
             // Bottom actions: prepare the SMS to the absent athletes' guardians, then validate.
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -1079,9 +1202,20 @@ fun CoachSessionSummaryScreen(
                         )
                     }
                 }
-
-                Button(
-                    onClick = { onValidateAndSave(endTimeString) },
+ 
+OutlinedButton(
+    onClick = onCancelSession,
+    shape = RoundedCornerShape(18.dp),
+    border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline),
+    colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
+    modifier = Modifier.fillMaxWidth().height(54.dp).testTag("coach_cancel_summary_btn")
+) {
+    Icon(Icons.Default.Close, contentDescription = null, modifier = Modifier.size(18.dp))
+    Spacer(modifier = Modifier.width(8.dp))
+    Text("Annuler la séance", style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold))
+}
+Button(
+    onClick = { onValidateAndSave(endTimeString) },
                     shape = RoundedCornerShape(18.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = JudoRed,
@@ -1104,7 +1238,7 @@ fun CoachSessionSummaryScreen(
         }
     }
 }
-
+ 
 @Composable
 fun ConcentricRipplesRadar(
     isScanning: Boolean,
@@ -1122,7 +1256,7 @@ fun ConcentricRipplesRadar(
         ),
         label = "radar_progress"
     )
-
+ 
     Box(
         modifier = modifier.size(175.dp),
         contentAlignment = Alignment.Center
@@ -1133,14 +1267,14 @@ fun ConcentricRipplesRadar(
             val baseRadius = 38.dp.toPx()
             val maxRadius = (minDim / 2f) - 6.dp.toPx()
             val spread = maxRadius - baseRadius
-
+ 
             if (isScanning) {
                 // 3 concentric expanding rings with subtle glow
                 for (i in 0 until 3) {
                     val ringPhase = (progress + (i / 3f)) % 1f
                     val currentRadius = baseRadius + spread * ringPhase
                     val ringAlpha = ((1f - ringPhase) * 0.75f).coerceIn(0f, 1f)
-
+ 
                     // Outer soft glow
                     drawCircle(
                         color = accentColor.copy(alpha = ringAlpha * 0.25f),
@@ -1157,7 +1291,7 @@ fun ConcentricRipplesRadar(
                     )
                 }
             }
-
+ 
             // Central circle backdrop & border
             drawCircle(
                 color = accentColor.copy(alpha = 0.12f),
@@ -1176,12 +1310,12 @@ fun ConcentricRipplesRadar(
                 style = Stroke(width = 2.dp.toPx())
             )
         }
-
+ 
         // Inner emblem/icon
         content()
     }
 }
-
+ 
 @Composable
 private fun StatPill(
     title: String,
@@ -1220,9 +1354,9 @@ private fun StatPill(
         }
     }
 }
-
+ 
 private enum class StatDetailMode { PRESENT, ABSENT, ALL }
-
+ 
 @Composable
 private fun StatAthletesDialog(
     mode: StatDetailMode,
@@ -1240,7 +1374,7 @@ private fun StatAthletesDialog(
         StatDetailMode.ABSENT -> absent.isEmpty()
         StatDetailMode.ALL -> present.isEmpty() && absent.isEmpty()
     }
-
+ 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -1301,7 +1435,7 @@ private fun StatAthletesDialog(
         }
     )
 }
-
+ 
 @Composable
 private fun AthleteStatRow(
     name: String,
@@ -1340,11 +1474,13 @@ private fun AthleteStatRow(
             Text(
                 text = if (present) "Présent ✓" else "Absent",
                 style = MaterialTheme.typography.labelSmall.copy(
-                    color = if (present) JudoSuccess else MaterialTheme.colorScheme.error,
-                    fontWeight = FontWeight.Bold
-                ),
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-            )
-        }
-    }
+                     color = if (present) JudoSuccess else MaterialTheme.colorScheme.error,
+                     fontWeight = FontWeight.Bold
+                 ),
+                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+             )
+         }
+     }
 }
+
+ 

@@ -54,8 +54,9 @@ import com.example.data.model.ScheduledTrainingSession
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 
+// Semaine du club : elle commence le vendredi (1er jour d'entrainement).
 private val WEEK_DAY_ORDER = listOf(
-    "Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"
+    "Vendredi", "Samedi", "Dimanche", "Lundi", "Mardi", "Mercredi", "Jeudi"
 )
 
 @Composable
@@ -356,27 +357,33 @@ private fun SessionPlanningCard(
                 }
 
                 val coachLabel = if (session.coachNames.isNotEmpty()) {
-                    session.coachNames.joinToString(", ")
+                    session.coachNames.joinToString(" • ")
                 } else {
                     "Encadrement à définir"
                 }
                 Row(
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalAlignment = Alignment.Top,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Icon(
                         imageVector = Icons.Default.SportsMartialArts,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(13.dp)
+                        modifier = Modifier
+                            .padding(top = 2.dp)
+                            .size(13.dp)
                     )
-                    Text(
-                        text = "$coachLabel • Groupe ${session.groupCode}",
-                        style = MaterialTheme.typography.labelSmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        ),
-                        maxLines = 1
-                    )
+                    Column {
+                        // Les 2 coachs, chacun sur sa ligne (l'encadrement ne doit jamais
+                        // etre tronque a un seul nom).
+                        Text(
+                            text = coachLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            maxLines = 2
+                        )
+                    }
                 }
             }
 

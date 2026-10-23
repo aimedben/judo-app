@@ -18,3 +18,8 @@ local.properties
 debug.keystore
 ui_dump*.xml
 replay_pid*.log
+
+# Signing keystore (secret - never publish)
+my-upload-key.jks
+*.jks
+*.keystore

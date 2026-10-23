@@ -1,4 +1,4 @@
-package com.example.data.sync
+﻿package com.example.data.sync
 
 import android.content.Context
 import android.net.ConnectivityManager
@@ -83,8 +83,8 @@ class SupabaseSyncService(
     private var autoSyncJob: Job? = null
 
     /**
-     * Déclenche une synchronisation automatique en arrière-plan lorsque la connexion est active,
-     * évitant la perte de données en cas de fermeture inattendue.
+     * DÃ©clenche une synchronisation automatique en arriÃ¨re-plan lorsque la connexion est active,
+     * Ã©vitant la perte de donnÃ©es en cas de fermeture inattendue.
      */
     fun triggerBackgroundAutoSync() {
         if (_config.value.isAutoSyncEnabled && isOnline() && !_isSyncing.value) {
@@ -112,7 +112,7 @@ class SupabaseSyncService(
             isAutoSyncEnabled = prefs.getBoolean("supabase_auto_sync", true),
             isDaily22hSyncEnabled = prefs.getBoolean("supabase_daily_22h_sync", true),
             lastSyncTimestamp = prefs.getLong("supabase_last_sync_timestamp", 0L),
-            lastSyncStatus = prefs.getString("supabase_last_sync_status", "CONFIGURÉ") ?: "CONFIGURÉ"
+            lastSyncStatus = prefs.getString("supabase_last_sync_status", "CONFIGURÃ‰") ?: "CONFIGURÃ‰"
         )
     }
 
@@ -143,7 +143,7 @@ class SupabaseSyncService(
     suspend fun testConnection(): Result<String> = withContext(Dispatchers.IO) {
         val cfg = _config.value
         if (!cfg.isConfigured) {
-            return@withContext Result.failure(Exception("URL ou Clé API Supabase non renseignée"))
+            return@withContext Result.failure(Exception("URL ou ClÃ© API Supabase non renseignÃ©e"))
         }
         if (!isOnline()) {
             return@withContext Result.failure(Exception("Aucune connexion Internet disponible sur la tablette"))
@@ -159,13 +159,46 @@ class SupabaseSyncService(
 
             httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful || response.code in 200..299 || response.code == 404) {
-                    Result.success("Connexion à Supabase réussie avec l'offre gratuite (HTTP ${response.code})")
+                    val cloudMembers = countRemoteRows(cfg, "members")
+                    val cloudCoaches = countRemoteRows(cfg, "coaches")
+                    val cloudSessions = countRemoteRows(cfg, "scheduled_sessions")
+                    val localMembers = runCatching { memberDao.countMembers() }.getOrDefault(0)
+                    val detail = buildString {
+                        if (cloudMembers != null) {
+                            append("Cloud : $cloudMembers athlÃ¨tes")
+                            if (cloudCoaches != null) append(", $cloudCoaches coachs")
+                            if (cloudSessions != null) append(", $cloudSessions crÃ©neaux")
+                            append(" â€¢ Tablette : $localMembers athlÃ¨tes")
+                        }
+                    }
+                    val base = "Connexion Ã  Supabase rÃ©ussie (HTTP ${response.code})"
+                    Result.success(if (detail.isBlank()) base else "$base\n$detail")
                 } else {
                     Result.failure(Exception("Erreur de connexion Supabase (Code HTTP ${response.code})"))
                 }
             }
         } catch (e: Exception) {
             Result.failure(Exception("Impossible de joindre le serveur Supabase : ${e.localizedMessage ?: e.message}"))
+        }
+    }
+
+    /** Exact row count of a table (null when the count cannot be read). */
+    private fun countRemoteRows(cfg: SupabaseConfig, table: String): Int? {
+        return try {
+            val request = Request.Builder()
+                .url("${cfg.url}/rest/v1/$table?select=id")
+                .addHeader("apikey", cfg.anonKey)
+                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+                .addHeader("Prefer", "count=exact")
+                .addHeader("Range", "0-0")
+                .get()
+                .build()
+            httpClient.newCall(request).execute().use { response ->
+                val range = response.header("Content-Range") ?: return null
+                range.substringAfter('/', "").trim().toIntOrNull()
+            }
+        } catch (e: Exception) {
+            null
         }
     }
 
@@ -206,30 +239,13 @@ class SupabaseSyncService(
                 payloadJson = json.toString()
             )
         )
-        triggerBackgroundAutoSync()
+        pushNow("MEMBERS", member.id.toString())
     }
 
-    suspend fun enqueueAttendance(attendance: Attendance) = withContext(Dispatchers.IO) {
-        val json = JSONObject().apply {
-            put("id", attendance.id)
-            put("member_id", attendance.memberId)
-            put("date_string", attendance.dateString)
-            put("time_string", attendance.timeString)
-            put("timestamp", attendance.timestamp)
-            put("check_in_method", attendance.checkInMethod)
-            put("device_id", attendance.deviceId)
-            put("created_at", getIsoNow())
-        }
-        syncQueueDao.enqueue(
-            SyncQueueEntity(
-                entityType = "ATTENDANCES",
-                entityId = attendance.id.toString(),
-                operation = "UPSERT",
-                payloadJson = json.toString()
-            )
-        )
-        triggerBackgroundAutoSync()
-    }
+    // NOTE : les pointages (table `attendances`) ne sont volontairement PLUS synchronises.
+    // Les presences/absences sont deja sauvegardees par seance dans `past_sessions`
+    // (present_members / absent_members) : la table cloud etait donc redondante et
+    // gonflait la base (une ligne par scan). Le pointage reste 100 % local (Room).
 
     suspend fun enqueueCategory(category: CategoryEntity, operation: String = "UPSERT") = withContext(Dispatchers.IO) {
         val json = JSONObject().apply {
@@ -250,7 +266,7 @@ class SupabaseSyncService(
                 payloadJson = json.toString()
             )
         )
-        triggerBackgroundAutoSync()
+        pushNow("CATEGORIES", category.id)
     }
 
     suspend fun enqueueCoach(coach: CoachEntity, operation: String = "UPSERT") = withContext(Dispatchers.IO) {
@@ -283,7 +299,7 @@ class SupabaseSyncService(
                 payloadJson = json.toString()
             )
         )
-        triggerBackgroundAutoSync()
+        pushNow("COACHES", coach.id)
     }
 
     suspend fun enqueueCoachDelete(coachId: String) = withContext(Dispatchers.IO) {
@@ -295,7 +311,45 @@ class SupabaseSyncService(
                 payloadJson = "{}"
             )
         )
-        triggerBackgroundAutoSync()
+        pushNow("COACHES", coachId)
+    }
+
+    /**
+     * Generic cloud-delete operation for any tracked entity type
+     * ("CATEGORIES", "PAST_SESSIONS", "ATTENDANCES", "SCHEDULED_SESSIONS", ...).
+     * The row is removed from Supabase on the next [performFullSync].
+     */
+        /**
+     * Supprime IMMEDIATEMENT la ligne distante (si le cloud est configure et joignable).
+     *
+     * La file de synchronisation ne garantit qu'une suppression "au prochain sync" :
+     * quand on efface une seance de l'historique, l'utilisateur attend que la ligne
+     * disparaisse tout de suite de Supabase. En cas d'echec/hors-ligne, l'appelant
+     * doit mettre l'operation en file ([enqueueDelete]) pour reessayer plus tard.
+     */
+    suspend fun deleteRemoteNow(entityType: String, entityId: String): Boolean = withContext(Dispatchers.IO) {
+        val cfg = _config.value
+        if (!cfg.isConfigured || entityId.isBlank()) return@withContext false
+        try {
+            // Un UPSERT encore en file pourrait recreer la ligne apres la suppression.
+            syncQueueDao.deletePendingUpserts(entityType, entityId)
+            deleteFromSupabase(cfg, mapEntityTypeToSupabaseTable(entityType), entityId)
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Suppression immediate $entityType/$entityId : ${e.message}")
+            false
+        }
+    }
+
+    suspend fun enqueueDelete(entityType: String, entityId: String) = withContext(Dispatchers.IO) {
+        syncQueueDao.enqueue(
+            SyncQueueEntity(
+                entityType = entityType,
+                entityId = entityId,
+                operation = "DELETE",
+                payloadJson = "{}"
+            )
+        )
+        pushNow(entityType, entityId)
     }
 
     suspend fun enqueueScheduledSession(session: ScheduledSessionEntity, operation: String = "UPSERT") = withContext(Dispatchers.IO) {
@@ -334,7 +388,7 @@ class SupabaseSyncService(
                 payloadJson = json.toString()
             )
         )
-        triggerBackgroundAutoSync()
+        pushNow("SCHEDULED_SESSIONS", session.id)
     }
 
     suspend fun enqueuePastSession(session: PastSessionEntity) = withContext(Dispatchers.IO) {
@@ -372,7 +426,7 @@ class SupabaseSyncService(
                 payloadJson = json.toString()
             )
         )
-        triggerBackgroundAutoSync()
+        pushNow("PAST_SESSIONS", session.id)
     }
 
     /**
@@ -406,6 +460,8 @@ class SupabaseSyncService(
             put("club_phone", appPrefs.getString("club_phone", "") ?: "")
             put("club_hours", appPrefs.getString("club_hours", "") ?: "")
             put("club_season", appPrefs.getString("club_season", "") ?: "")
+            put("official_start_date", appPrefs.getString("official_start_date", "") ?: "")
+            put("sms_sender_number", appPrefs.getString("sms_sender_number", "") ?: "")
             put("admin_name", appPrefs.getString("admin_name", "") ?: "")
             put("admin_email", appPrefs.getString("admin_email", "") ?: "")
             put("admin_phone", appPrefs.getString("admin_phone", "") ?: "")
@@ -436,48 +492,126 @@ class SupabaseSyncService(
                     payloadJson = json.toString()
                 )
             )
-            triggerBackgroundAutoSync()
+            pushNow("CLUB_SETTINGS", "default")
         } catch (e: Exception) {
             Log.w("SupabaseSync", "enqueueClubSettings failed: ${e.message}")
         }
     }
 
-    suspend fun enqueueAllLocalData() = withContext(Dispatchers.IO) {
-        val members = memberDao.getAllMembersDirect()
-        for (m in members) {
-            enqueueMember(m)
-        }
-        val attendances = attendanceDao.getAllAttendancesDirect()
-        for (att in attendances) {
-            enqueueAttendance(att)
-        }
-        val categories = clubDao.getAllCategories()
-        for (c in categories) {
-            enqueueCategory(c)
-        }
-        val coaches = clubDao.getAllCoaches()
-        for (co in coaches) {
-            enqueueCoach(co)
-        }
-        val sessions = clubDao.getAllScheduledSessions()
-        for (s in sessions) {
-            enqueueScheduledSession(s)
-        }
-        val past = clubDao.getAllPastSessions()
-        for (p in past) {
-            enqueuePastSession(p)
-        }
-        enqueueClubSettings()
-    }
-
     // ----------------------------------------------------
     // SYNCHRONIZATION EXECUTION (OFFLINE-FIRST TO CLOUD)
     // ----------------------------------------------------
-    suspend fun performFullSync(): SyncReport = withContext(Dispatchers.IO) {
+    /**
+     * Envoie immediatement une ligne precise de la file vers Supabase (sans attendre
+     * la synchronisation complete). Utilise apres chaque modification d'un coach,
+     * d'une categorie, d'un athlete ou d'une seance : la base cloud reflete le
+     * changement en quelques centaines de millisecondes.
+     */
+    suspend fun pushNow(entityType: String, entityId: String) = withContext(Dispatchers.IO) {
+        val cfg = _config.value
+        if (!cfg.isConfigured || !isOnline()) return@withContext
+        // On attend le verrou au lieu d'abandonner : une validation de seance doit partir
+        // tout de suite, meme si une synchronisation complete est deja en cours. Le verrou
+        // garantit qu'aucune ecriture ne se chevauche.
+        syncMutex.withLock {
+            try {
+                pushPendingOperations(cfg) { op ->
+                    op.entityType == entityType && op.entityId == entityId
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseSync", "pushNow($entityType/$entityId) failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Vide la file locale vers Supabase. [only] permet de ne traiter qu'une ligne
+     * (envoi immediat) ; null traite toute la file.
+     * @return le nombre d'elements envoyes et la premiere erreur rencontree.
+     */
+    private suspend fun pushPendingOperations(
+        cfg: SupabaseConfig,
+        only: ((com.example.data.local.sync.SyncQueueEntity) -> Boolean)? = null
+    ): Pair<Int, String?> {
+        var itemsSent = 0
+        var syncError: String? = null
+        val pending = syncQueueDao.getPendingOperationsDirect().filter { op ->
+            only == null || only(op)
+        }
+        for (op in pending) {
+            try {
+                syncQueueDao.updateStatus(op.id, SyncStatus.IN_PROGRESS.name)
+                val table = mapEntityTypeToSupabaseTable(op.entityType)
+
+                if (op.operation == "DELETE") {
+                    val success = deleteFromSupabase(cfg, table, op.entityId)
+                    deleteRemotePhoto(cfg, op.entityType, op.entityId)
+                    if (success) {
+                        syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
+                        itemsSent++
+                        auditLogDao.insert(
+                            SyncAuditLogEntity(
+                                entityName = op.entityType,
+                                entityId = op.entityId,
+                                operationType = op.operation,
+                                details = "SupprimÃ© de la table $table"
+                            )
+                        )
+                    } else {
+                        val errMsg = "Suppression non appliquÃ©e cÃ´tÃ© cloud sur $table (ligne toujours prÃ©sente)"
+                        syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
+                        if (syncError == null) syncError = errMsg
+                    }
+                    continue
+                }
+
+                // Upload the photo (if any) before publishing the row.
+                val prepared = if (op.entityType == "CLUB_SETTINGS") {
+                    prepareClubSettingsPayload(cfg, op.payloadJson)
+                } else {
+                    preparePayloadForPush(cfg, op.entityType, op.payloadJson)
+                }
+                if (!prepared.ok) {
+                    val errMsg = "Photo non tÃ©lÃ©versÃ©e vers Supabase Storage"
+                    syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
+                    if (syncError == null) syncError = errMsg
+                    continue
+                }
+
+                val success = upsertToSupabase(cfg, table, prepared.json)
+
+                if (success) {
+                    syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
+                    itemsSent++
+                    auditLogDao.insert(
+                        SyncAuditLogEntity(
+                            entityName = op.entityType,
+                            entityId = op.entityId,
+                            operationType = op.operation,
+                            details = "SynchronisÃ© avec succÃ¨s vers table $table"
+                        )
+                    )
+                } else {
+                    val errMsg = "RÃ©ponse serveur non-2xx sur la table $table"
+                    syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
+                    if (syncError == null) syncError = errMsg
+                }
+            } catch (e: Exception) {
+                syncQueueDao.markError(op.id, SyncStatus.PENDING.name, e.message)
+                if (syncError == null) syncError = e.message
+            }
+        }
+
+        // Clean synced items from queue to keep DB minimal
+        syncQueueDao.cleanSyncedOperations()
+        return itemsSent to syncError
+    }
+
+    suspend fun performFullSync(onSection: (() -> Unit)? = null): SyncReport = withContext(Dispatchers.IO) {
         if (_isSyncing.value) {
             return@withContext SyncReport(
                 isSuccess = false,
-                errorMessage = "Une synchronisation est déjà en cours. Veuillez patienter.",
+                errorMessage = "Une synchronisation est dÃ©jÃ  en cours. Veuillez patienter.",
                 pendingRemaining = syncQueueDao.countPendingOperationsDirect()
             )
         }
@@ -486,7 +620,7 @@ class SupabaseSyncService(
         if (!cfg.isConfigured) {
             return@withContext SyncReport(
                 isSuccess = false,
-                errorMessage = "Supabase non configuré (renseignez l'URL et la clé anon dans les paramètres)",
+                errorMessage = "Supabase non configurÃ© (renseignez l'URL et la clÃ© anon dans les paramÃ¨tres)",
                 pendingRemaining = syncQueueDao.countPendingOperationsDirect()
             )
         }
@@ -494,7 +628,7 @@ class SupabaseSyncService(
         if (!isOnline()) {
             return@withContext SyncReport(
                 isSuccess = false,
-                errorMessage = "Aucune connexion Internet disponible sur la tablette. Les données restent conservées localement.",
+                errorMessage = "Aucune connexion Internet disponible sur la tablette. Les donnÃ©es restent conservÃ©es localement.",
                 pendingRemaining = syncQueueDao.countPendingOperationsDirect()
             )
         }
@@ -507,87 +641,49 @@ class SupabaseSyncService(
             var syncError: String? = null
 
             try {
-                // Seed local queue from existing SQLite database if queue is empty
-                if (syncQueueDao.countPendingOperationsDirect() == 0) {
-                    enqueueAllLocalData()
-                }
+                // Ordering matters both ways:
+                // - Queue EMPTY (fresh start): pull FIRST so the cloud fills the local
+                //   tables before anything is pushed â€” pushing a brand-new Room database
+                //   used to shadow real cloud rows with whatever a fresh install contained.
+                // - Queue NON-EMPTY: push FIRST, so cloud DELETEs (tombstones) land before
+                //   the pull runs; a pull executed first would re-add rows whose deletion
+                //   is still queued.
+                val queueWasPending = syncQueueDao.countPendingOperationsDirect() > 0
+                var pulled: PullResult? = null
 
-                // 1. Process local pending queue (Push)
-                val pending = syncQueueDao.getPendingOperationsDirect()
-                for (op in pending) {
+                if (!queueWasPending) {
                     try {
-                        syncQueueDao.updateStatus(op.id, SyncStatus.IN_PROGRESS.name)
-                        val table = mapEntityTypeToSupabaseTable(op.entityType)
-
-                        if (op.operation == "DELETE") {
-                            val success = deleteFromSupabase(cfg, table, op.entityId)
-                            deleteRemotePhoto(cfg, op.entityType, op.entityId)
-                            if (success) {
-                                syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
-                                itemsSent++
-                                auditLogDao.insert(
-                                    SyncAuditLogEntity(
-                                        entityName = op.entityType,
-                                        entityId = op.entityId,
-                                        operationType = op.operation,
-                                        details = "Supprimé de la table $table"
-                                    )
-                                )
-                            } else {
-                                val errMsg = "Réponse serveur non-2xx sur la table $table"
-                                syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
-                                if (syncError == null) syncError = errMsg
-                            }
-                            continue
-                        }
-
-                        // Upload the photo (if any) before publishing the row.
-                        val prepared = if (op.entityType == "CLUB_SETTINGS") {
-                            prepareClubSettingsPayload(cfg, op.payloadJson)
-                        } else {
-                            preparePayloadForPush(cfg, op.entityType, op.payloadJson)
-                        }
-                        if (!prepared.ok) {
-                            val errMsg = "Photo non téléversée vers Supabase Storage"
-                            syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
-                            if (syncError == null) syncError = errMsg
-                            continue
-                        }
-
-                        val success = upsertToSupabase(cfg, table, prepared.json)
-
-                        if (success) {
-                            syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
-                            itemsSent++
-                            auditLogDao.insert(
-                                SyncAuditLogEntity(
-                                    entityName = op.entityType,
-                                    entityId = op.entityId,
-                                    operationType = op.operation,
-                                    details = "Synchronisé avec succès vers table $table"
-                                )
-                            )
-                        } else {
-                            val errMsg = "Réponse serveur non-2xx sur la table $table"
-                            syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
-                            if (syncError == null) syncError = errMsg
-                        }
+                        pulled = pullRemoteUpdates(cfg, onSection)
                     } catch (e: Exception) {
-                        syncQueueDao.markError(op.id, SyncStatus.PENDING.name, e.message)
-                        if (syncError == null) syncError = e.message
+                        Log.w("SupabaseSync", "Pull warning: ${e.message}")
                     }
+                    itemsReceived = pulled?.itemsReceived ?: 0
+                    conflictsResolved = pulled?.conflictsResolved ?: 0
+                    // NOTE: on ne "repousse" JAMAIS tout le contenu local quand le pull
+                    // ne rapporte rien. C'est ce comportement qui ressuscitait des lignes
+                    // supprimees (historique) et saturait la file avec 369 membres a
+                    // chaque synchronisation. Ce qui doit monter est deja dans la file,
+                    // alimentee par les mutations locales.
                 }
 
-                // Clean synced items from queue to keep DB minimal
-                syncQueueDao.cleanSyncedOperations()
+                // Process local pending queue (Push)
+                val (sentNow, pushError) = pushPendingOperations(cfg)
+                itemsSent = sentNow
+                if (pushError != null) syncError = pushError
 
-                // 2. Downward pull (fetch remote updates since last sync)
-                try {
-                    val pulled = pullRemoteUpdates(cfg)
-                    itemsReceived = pulled.itemsReceived
-                    conflictsResolved = pulled.conflictsResolved
-                } catch (e: Exception) {
-                    Log.w("SupabaseSync", "Pull warning: ${e.message}")
+                // Tail pull when the push went first: now that tombstones reached the
+                // cloud, the pull cannot resurrect rows whose deletion was queued.
+                if (queueWasPending) {
+                    try {
+                        pulled = pullRemoteUpdates(cfg, onSection)
+                        itemsReceived = pulled?.itemsReceived ?: 0
+                        conflictsResolved = pulled?.conflictsResolved ?: 0
+                    } catch (e: Exception) {
+                        Log.w("SupabaseSync", "Pull warning: ${e.message}")
+                    }
+                } else if (pulled == null) {
+                    // The initial pull failed: report the failure without a second pass.
+                    Log.w("SupabaseSync", "Initial pull failed; pull skipped this cycle")
                 }
 
                 val now = System.currentTimeMillis()
@@ -597,7 +693,7 @@ class SupabaseSyncService(
                 if (isSuccess) {
                     prefs.edit()
                         .putLong("supabase_last_sync_timestamp", now)
-                        .putString("supabase_last_sync_status", "SYNCHRONISÉ")
+                        .putString("supabase_last_sync_status", "SYNCHRONISÃ‰")
                         .apply()
                     _config.value = loadConfig()
                 }
@@ -607,7 +703,12 @@ class SupabaseSyncService(
                     itemsSent = itemsSent,
                     itemsReceived = itemsReceived,
                     conflictsResolved = conflictsResolved,
-                    errorMessage = if (!isSuccess) (syncError ?: "Certains éléments n'ont pas pu être synchronisés.") else null,
+                    errorMessage = if (!isSuccess) {
+                        buildString {
+                            append(syncError ?: "Certains Ã©lÃ©ments n'ont pas pu Ãªtre synchronisÃ©s.")
+                            if (remaining > 0) append(" â€” $remaining opÃ©ration(s) encore en attente")
+                        }
+                    } else null,
                     pendingRemaining = remaining,
                     timestamp = now
                 )
@@ -706,13 +807,16 @@ class SupabaseSyncService(
 
             if (localPath.isNotBlank() && objectKey.isNotBlank()) {
                 val bytes = PhotoCompressor.readBytes(localPath)
-                if (bytes == null || bytes.isEmpty()) {
-                    obj.put("admin_photo_object", JSONObject.NULL)
-                } else if (!storage.upload(cfg, bucket, objectKey, bytes)) {
-                    obj.put("admin_photo_object", JSONObject.NULL)
+                if (bytes != null && bytes.isNotEmpty() && storage.upload(cfg, bucket, objectKey, bytes)) {
+                    obj.put("admin_photo_object", objectKey)
+                } else {
+                    // Ne JAMAIS effacer la photo deja stockee dans le cloud quand la copie locale
+                    // est illisible (ancien content://, fichier purge...) : on omet la colonne,
+                    // l'upsert conserve donc la valeur distante existante.
+                    obj.remove("admin_photo_object")
                 }
             } else {
-                obj.put("admin_photo_object", JSONObject.NULL)
+                obj.remove("admin_photo_object")
             }
 
             obj.remove("admin_photo_local_path")
@@ -749,32 +853,94 @@ class SupabaseSyncService(
 
     private fun upsertToSupabase(cfg: SupabaseConfig, table: String, jsonPayload: String): Boolean {
         val url = "${cfg.url}/rest/v1/$table"
-        val body = jsonPayload.toRequestBody(jsonMediaType)
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("apikey", cfg.anonKey)
-            .addHeader("Authorization", "Bearer ${cfg.anonKey}")
-            .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
-            .post(body)
-            .build()
+        var payload = jsonPayload
 
-        httpClient.newCall(request).execute().use { response ->
-            return response.isSuccessful || response.code in 200..299
+        // Si le cloud n'a pas encore une colonne (ex. `admin_photo_object` ajoutee apres coup),
+        // PostgREST rejette TOUTE la ligne. On retire alors uniquement la colonne fautive et on
+        // reessaie : le profil administrateur (nom, telephone, e-mail) est sauvegarde même si la
+        // photo ne peut pas encore l'etre, au lieu de perdre l'ensemble du reglage.
+        repeat(6) {
+            val body = payload.toRequestBody(jsonMediaType)
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", cfg.anonKey)
+                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+                .addHeader("Prefer", "resolution=merge-duplicates,return=minimal")
+                .post(body)
+                .build()
+
+            var detail: String? = null
+            var code = 0
+            try {
+                httpClient.newCall(request).execute().use { response ->
+                    code = response.code
+                    if (response.isSuccessful || response.code in 200..299) return true
+                    // Le detail serveur (RLS, type de colonne, contrainte) est la seule facon de
+                    // diagnostiquer un refus : on le journalise sans jamais logguer la cle.
+                    detail = try {
+                        response.body?.string()?.take(400)
+                    } catch (_: Exception) {
+                        null
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("SupabaseSync", "UPSERT $table error: ${e.message}")
+                return false
+            }
+
+            Log.w("SupabaseSync", "UPSERT $table -> HTTP $code ${detail.orEmpty()}")
+
+            val unknownColumn = Regex(
+                "\"([A-Za-z0-9_]+)\" column does not exist|" +
+                    "Could not find the '([A-Za-z0-9_]+)' column|" +
+                    "column \"([A-Za-z0-9_]+)\" of relation"
+            ).find(detail.orEmpty())?.groupValues?.drop(1)?.firstOrNull { it.isNotBlank() }
+                ?: return false
+
+            val obj = try {
+                JSONObject(payload)
+            } catch (_: Exception) {
+                return false
+            }
+            if (!obj.has(unknownColumn)) return false
+            obj.remove(unknownColumn)
+            payload = obj.toString()
+            Log.w("SupabaseSync", "UPSERT $table: colonne '$unknownColumn' absente du cloud, nouvel essai")
         }
+        return false
     }
 
+    /**
+     * Supprime une ligne distante puis VERIFIE qu'elle a bien disparu.
+     *
+     * PostgREST repond 204 meme quand aucune ligne n'est touchee (id absent, RLS...) :
+     * sans verification, l'app considerait la suppression "reussie" et retirait
+     * l'operation de la file alors que la ligne restait dans Supabase.
+     */
     private fun deleteFromSupabase(cfg: SupabaseConfig, table: String, id: String): Boolean {
-        val url = "${cfg.url}/rest/v1/$table?id=eq.$id"
+        val encodedId = java.net.URLEncoder.encode(id, "UTF-8").replace("+", "%20")
+        val url = "${cfg.url}/rest/v1/$table?id=eq.$encodedId"
         val request = Request.Builder()
             .url(url)
             .addHeader("apikey", cfg.anonKey)
             .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+            .addHeader("Prefer", "return=representation")
             .delete()
             .build()
 
-        httpClient.newCall(request).execute().use { response ->
-            return response.isSuccessful || response.code in 200..299
+        val deleted = try {
+            httpClient.newCall(request).execute().use { response ->
+                response.isSuccessful || response.code in 200..299
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "DELETE $table/$id : ${e.message}")
+            false
         }
+        if (!deleted) return false
+
+        // Verification : la ligne doit avoir reellement disparu.
+        val verify = getRemoteArray(cfg, "$table?select=id&id=eq.$encodedId") ?: return true
+        return verify.length() == 0
     }
 
     private data class PullResult(val itemsReceived: Int, val conflictsResolved: Int)
@@ -800,75 +966,12 @@ class SupabaseSyncService(
         }
     }
 
-    private suspend fun pullRemoteUpdates(cfg: SupabaseConfig): PullResult {
+    private suspend fun pullRemoteUpdates(
+        cfg: SupabaseConfig,
+        onSection: (() -> Unit)? = null
+    ): PullResult {
         var received = 0
         var conflicts = 0
-
-        // Pull members
-        try {
-            // Explicit column list: the legacy (potentially large) photo_webp column is never
-            // transferred — photos live in Storage and are downloaded only on demand.
-            val url = "${cfg.url}/rest/v1/members?select=id,qr_code,first_name,last_name,birth_date,phone,group_code,belt_name,status,registration_date,photo_object,notes"
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("apikey", cfg.anonKey)
-                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
-                .get()
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyString = response.body?.string() ?: ""
-                    if (bodyString.isNotBlank() && bodyString.startsWith("[")) {
-                        val arr = JSONArray(bodyString)
-                        for (i in 0 until arr.length()) {
-                            val obj = arr.getJSONObject(i)
-                            val id = obj.optLong("id", 0L)
-                            val qrCode = obj.optString("qr_code", "")
-                            if (id > 0 && qrCode.isNotBlank()) {
-                                // Local is the source of truth: an existing member is never
-                                // overwritten by the cloud backup. Rows are only restored when a
-                                // device is missing them entirely (fresh install / new tablet).
-                                if (memberDao.getMemberByIdDirect(id) != null) continue
-
-                                var photoUrl = ""
-                                val photoObject = obj.optString("photo_object", "")
-                                if (photoObject.isNotBlank()) {
-                                    val bytes = storage.download(
-                                        cfg,
-                                        SupabaseStorageService.BUCKET_MEMBER_PHOTOS,
-                                        photoObject
-                                    )
-                                    if (bytes != null) {
-                                        photoUrl = PhotoCompressor.saveBytes(context, "member_$id", bytes) ?: ""
-                                    }
-                                }
-
-                                memberDao.insertMember(
-                                    Member(
-                                        id = id,
-                                        qrCode = qrCode,
-                                        firstName = obj.optString("first_name", ""),
-                                        lastName = obj.optString("last_name", ""),
-                                        birthDate = obj.optString("birth_date", ""),
-                                        phone = obj.optString("phone", ""),
-                                        groupCode = obj.optString("group_code", "U15"),
-                                        beltName = obj.optString("belt_name", "BLANCHE"),
-                                        status = obj.optString("status", "ACTIF"),
-                                        registrationDate = obj.optString("registration_date", "2026-09-01"),
-                                        photoUrl = photoUrl,
-                                        notes = obj.optString("notes", "")
-                                    )
-                                )
-                                received++
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling members: ${e.message}")
-        }
 
         // Pull coaches
         try {
@@ -934,18 +1037,22 @@ class SupabaseSyncService(
         } catch (e: Exception) {
             Log.w("SupabaseSync", "Error pulling coaches: ${e.message}")
         }
+        // Rafraichissement progressif : le planning / les coachs / les categories doivent
+        // apparaitre a l'ecran AVANT le (lourd) telechargement des athletes.
+        onSection?.invoke()
 
-        // --- Categories (fill-missing only) ---
+        // --- Categories (source of truth = cloud) ---
         try {
             getRemoteArray(
                 cfg,
                 "judo_categories?select=id,name,group_code,coach1_name,coach2_name,description,is_active"
             )?.let { arr ->
-                val localIds = clubDao.getAllCategories().map { it.id }.toHashSet()
+                val remoteIds = HashSet<String>()
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
                     val id = obj.optString("id", "")
-                    if (id.isBlank() || id in localIds) continue
+                    if (id.isBlank()) continue
+                    remoteIds.add(id)
                     clubDao.insertCategory(
                         CategoryEntity(
                             id = id,
@@ -959,12 +1066,18 @@ class SupabaseSyncService(
                     )
                     received++
                 }
+                // Aucune categorie locale hors cloud : les reliquats (anciennes categories
+                // integrees ou doublons) sont supprimes pour ne jamais apparaitre deux fois.
+                clubDao.getAllCategories()
+                    .filter { it.id !in remoteIds }
+                    .forEach { clubDao.deleteCategory(it) }
             }
         } catch (e: Exception) {
             Log.w("SupabaseSync", "Error pulling categories: ${e.message}")
         }
+        onSection?.invoke()
 
-        // --- Scheduled sessions (fill-missing only) ---
+        // --- Scheduled sessions (planning : le cloud fait foi) ---
         try {
             getRemoteArray(
                 cfg,
@@ -972,39 +1085,56 @@ class SupabaseSyncService(
                     "date_string,formatted_display_date,start_time,end_time,coach_ids,coach_names," +
                     "is_recurring_weekly,recurrence_end_date,series_id,notes,status"
             )?.let { arr ->
-                val localIds = clubDao.getAllScheduledSessions().map { it.id }.toHashSet()
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    val id = obj.optString("id", "")
-                    if (id.isBlank() || id in localIds) continue
-                    clubDao.insertScheduledSession(
-                        ScheduledSessionEntity(
-                            id = id,
-                            categoryId = obj.optString("category_id", ""),
-                            categoryName = obj.optString("category_name", ""),
-                            groupCode = obj.optString("group_code", ""),
-                            dayOfWeekName = obj.optString("day_of_week_name", ""),
-                            dateString = obj.optString("date_string", ""),
-                            formattedDisplayDate = obj.optString("formatted_display_date", ""),
-                            startTime = obj.optString("start_time", ""),
-                            endTime = obj.optString("end_time", ""),
-                            coachIdsJoined = jsonArrayToJoined(obj.optJSONArray("coach_ids")),
-                            coachNamesJoined = jsonArrayToJoined(obj.optJSONArray("coach_names")),
-                            isRecurringWeekly = obj.optBoolean("is_recurring_weekly", false),
-                            recurrenceEndDate = obj.optString("recurrence_end_date", "").ifBlank { null },
-                            seriesId = obj.optString("series_id", "").ifBlank { null },
-                            notes = obj.optString("notes", ""),
-                            status = obj.optString("status", "SCHEDULED")
+                if (arr.length() > 0) {
+                    val remoteIds = HashSet<String>()
+                    for (i in 0 until arr.length()) {
+                        val obj = arr.optJSONObject(i) ?: continue
+                        val id = obj.optString("id", "")
+                        if (id.isBlank()) continue
+                        remoteIds.add(id)
+                        clubDao.insertScheduledSession(
+                            ScheduledSessionEntity(
+                                id = id,
+                                categoryId = obj.optString("category_id", ""),
+                                categoryName = obj.optString("category_name", ""),
+                                groupCode = obj.optString("group_code", ""),
+                                dayOfWeekName = obj.optString("day_of_week_name", ""),
+                                dateString = obj.optString("date_string", ""),
+                                formattedDisplayDate = obj.optString("formatted_display_date", ""),
+                                startTime = obj.optString("start_time", ""),
+                                endTime = obj.optString("end_time", ""),
+                                coachIdsJoined = jsonArrayToJoined(obj.optJSONArray("coach_ids")),
+                                coachNamesJoined = jsonArrayToJoined(obj.optJSONArray("coach_names")),
+                                isRecurringWeekly = obj.optBoolean("is_recurring_weekly", false),
+                                recurrenceEndDate = obj.optString("recurrence_end_date", "").ifBlank { null },
+                                seriesId = obj.optString("series_id", "").ifBlank { null },
+                                notes = obj.optString("notes", ""),
+                                status = obj.optString("status", "SCHEDULED")
+                            )
                         )
-                    )
-                    received++
+                        received++
+                    }
+                    // Le planning programme (admin > seances) remplace l'ancien : les seances
+                    // locales qui n'existent plus cote cloud (demo / doublons) sont supprimees.
+                    clubDao.getAllScheduledSessions()
+                        .filter { it.id !in remoteIds }
+                        .forEach { clubDao.deleteScheduledSessionById(it.id) }
                 }
             }
         } catch (e: Exception) {
             Log.w("SupabaseSync", "Error pulling scheduled sessions: ${e.message}")
         }
 
-        // --- Past sessions (fill-missing only) ---
+        // --- Membres (en dernier : planning, coachs et categories sont deja a l'ecran) ---
+        try {
+            val (membersReceived, membersConflicts) = pullMembers(cfg)
+            received += membersReceived
+            conflicts += membersConflicts
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling members: ${e.message}")
+        }
+        onSection?.invoke()
+        // --- Past sessions (le cloud fait foi sauf edition locale en attente) ---
         try {
             getRemoteArray(
                 cfg,
@@ -1012,11 +1142,12 @@ class SupabaseSyncService(
                     "end_time,coach1_name,coach1_present,coach2_name,coach2_present,present_count," +
                     "absent_count,present_member_names,absent_member_names"
             )?.let { arr ->
-                val localIds = clubDao.getAllPastSessions().map { it.id }.toHashSet()
                 for (i in 0 until arr.length()) {
                     val obj = arr.optJSONObject(i) ?: continue
                     val id = obj.optString("id", "")
-                    if (id.isBlank() || id in localIds) continue
+                    if (id.isBlank()) continue
+                    // Une correction faite ici mais pas encore poussee ne doit pas etre ecrasee.
+                    if (syncQueueDao.countPendingForEntity("PAST_SESSIONS", id) > 0) continue
                     clubDao.insertPastSession(
                         PastSessionEntity(
                             id = id,
@@ -1043,38 +1174,9 @@ class SupabaseSyncService(
             Log.w("SupabaseSync", "Error pulling past sessions: ${e.message}")
         }
 
-        // --- Attendances (fill-missing only) ---
-        try {
-            getRemoteArray(
-                cfg,
-                "attendances?select=id,member_id,date_string,time_string,timestamp,check_in_method,device_id"
-            )?.let { arr ->
-                val localIds = attendanceDao.getAllAttendancesDirect().map { it.id }.toHashSet()
-                val toInsert = mutableListOf<Attendance>()
-                for (i in 0 until arr.length()) {
-                    val obj = arr.optJSONObject(i) ?: continue
-                    val id = obj.optLong("id", 0L)
-                    if (id <= 0L || id in localIds) continue
-                    toInsert.add(
-                        Attendance(
-                            id = id,
-                            memberId = obj.optLong("member_id", 0L),
-                            dateString = obj.optString("date_string", ""),
-                            timeString = obj.optString("time_string", ""),
-                            timestamp = obj.optLong("timestamp", 0L),
-                            checkInMethod = obj.optString("check_in_method", "QR_SCAN"),
-                            deviceId = obj.optString("device_id", "")
-                        )
-                    )
-                }
-                if (toInsert.isNotEmpty()) {
-                    attendanceDao.insertAll(toInsert)
-                    received += toInsert.size
-                }
-            }
-        } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling attendances: ${e.message}")
-        }
+        // --- Attendances : plus de pull ---
+        // La table `attendances` a ete retiree du cloud : les presences officielles sont
+        // lues dans `past_sessions` (present_members / absent_members).
 
         // --- Club settings (fill-missing only: blank local values are completed) ---
         try {
@@ -1095,6 +1197,8 @@ class SupabaseSyncService(
                         fill("club_phone", obj.optString("club_phone", ""))
                         fill("club_hours", obj.optString("club_hours", ""))
                         fill("club_season", obj.optString("club_season", ""))
+                        fill("official_start_date", obj.optString("official_start_date", ""))
+                        fill("sms_sender_number", obj.optString("sms_sender_number", ""))
                         fill("admin_name", obj.optString("admin_name", ""))
                         fill("admin_email", obj.optString("admin_email", ""))
                         fill("admin_phone", obj.optString("admin_phone", ""))
@@ -1102,9 +1206,12 @@ class SupabaseSyncService(
                         // The administrator avatar is stored as an object: fetch it only when
                         // the device has no photo yet.
                         val adminPhotoObject = obj.optString("admin_photo_object", "")
-                        if (adminPhotoObject.isNotBlank() &&
-                            (appPrefs.getString("admin_photo_uri", "") ?: "").isBlank()
-                        ) {
+                        val localAdminPhoto = appPrefs.getString("admin_photo_uri", "") ?: ""
+                        val localAdminPhotoExists = localAdminPhoto
+                            .removePrefix("file://")
+                            .takeIf { it.isNotBlank() }
+                            ?.let { java.io.File(it).exists() } == true
+                        if (adminPhotoObject.isNotBlank() && !localAdminPhotoExists) {
                             val bytes = storage.download(
                                 cfg,
                                 SupabaseStorageService.BUCKET_CLUB_ASSETS,
@@ -1135,8 +1242,122 @@ class SupabaseSyncService(
         } catch (e: Exception) {
             Log.w("SupabaseSync", "Error pulling club settings: ${e.message}")
         }
+        onSection?.invoke()
 
         return PullResult(received, conflicts)
+    }
+
+    /**
+     * Telecharge les athletes en DERNIER : le planning, les coachs et les categories sont
+     * deja appliques et affiches avant ce traitement (381 fiches + leurs photos).
+     */
+    private suspend fun pullMembers(cfg: SupabaseConfig): Pair<Int, Int> {
+        var received = 0
+        var conflicts = 0
+        try {
+            // Explicit column list: the legacy (potentially large) photo_webp column is never
+            // transferred — photos live in Storage and are downloaded only on demand.
+            val url = "${cfg.url}/rest/v1/members?select=id,qr_code,first_name,last_name,birth_date,phone,group_code,belt_name,status,registration_date,photo_object,notes"
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("apikey", cfg.anonKey)
+                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+                .addHeader("Prefer", "count=exact")
+                .get()
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyString = response.body?.string() ?: ""
+                    if (bodyString.isNotBlank() && bodyString.startsWith("[")) {
+                        val arr = JSONArray(bodyString)
+                        val remoteIds = HashSet<Long>()
+                        for (i in 0 until arr.length()) {
+                            val obj = arr.getJSONObject(i)
+                            val id = obj.optLong("id", 0L)
+                            val qrCode = obj.optString("qr_code", "")
+                            if (id <= 0 || qrCode.isBlank()) continue
+                            remoteIds.add(id)
+
+                            // The cloud row wins only when this device has no pending edit for it.
+                            if (syncQueueDao.countPendingForEntity("MEMBERS", id.toString()) > 0) {
+                                conflicts++
+                                continue
+                            }
+
+                            val photoObject = obj.optString("photo_object", "")
+                            val cloud = Member(
+                                id = id,
+                                qrCode = qrCode,
+                                firstName = obj.optString("first_name", ""),
+                                lastName = obj.optString("last_name", ""),
+                                birthDate = obj.optString("birth_date", ""),
+                                phone = obj.optString("phone", ""),
+                                groupCode = obj.optString("group_code", "U15"),
+                                beltName = obj.optString("belt_name", "BLANCHE"),
+                                status = obj.optString("status", "ACTIF"),
+                                registrationDate = obj.optString("registration_date", "2026-09-01"),
+                                photoUrl = "",
+                                notes = obj.optString("notes", "")
+                            )
+
+                            val local = memberDao.getMemberByIdDirect(id)
+                            if (local != null) {
+                                var photoUrl = local.photoUrl
+                                if (photoUrl.isBlank() && photoObject.isNotBlank()) {
+                                    val bytes = storage.download(
+                                        cfg,
+                                        SupabaseStorageService.BUCKET_MEMBER_PHOTOS,
+                                        photoObject
+                                    )
+                                    if (bytes != null) {
+                                        photoUrl = PhotoCompressor.saveBytes(context, "member_$id", bytes) ?: ""
+                                    }
+                                }
+                                val synced = cloud.copy(photoUrl = photoUrl)
+                                if (synced != local) {
+                                    memberDao.updateMember(synced)
+                                    received++
+                                }
+                                continue
+                            }
+
+                            var photoUrl = ""
+                            if (photoObject.isNotBlank()) {
+                                val bytes = storage.download(
+                                    cfg,
+                                    SupabaseStorageService.BUCKET_MEMBER_PHOTOS,
+                                    photoObject
+                                )
+                                if (bytes != null) {
+                                    photoUrl = PhotoCompressor.saveBytes(context, "member_$id", bytes) ?: ""
+                                }
+                            }
+
+                            memberDao.insertMember(cloud.copy(photoUrl = photoUrl))
+                            received++
+                        }
+
+                        // Drop ghosts (rows deleted on another device). Only when the response is
+                        // complete and this device has nothing left to push for members.
+                        val total = response.header("Content-Range")
+                            ?.substringAfter('/', "")
+                            ?.toIntOrNull()
+                        val complete = total == null || total == arr.length()
+                        if (complete && syncQueueDao.countPendingForType("MEMBERS") == 0) {
+                            val stale = memberDao.getAllMembersDirect().filterNot { it.id in remoteIds }
+                            stale.forEach { memberDao.deleteMember(it) }
+                            if (stale.isNotEmpty()) {
+                                Log.i("SupabaseSync", "Removed ${stale.size} member(s) absent from cloud")
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("SupabaseSync", "Error pulling members: ${e.message}")
+        }
+        return received to conflicts
     }
 
     // ----------------------------------------------------
@@ -1339,7 +1560,7 @@ class SupabaseSyncService(
         try {
             val root = JSONObject(backupJson)
             if (!root.has("members") && !root.has("categories")) {
-                return@withContext Result.failure(Exception("Format de sauvegarde JSON invalide (clés attendues manquantes)"))
+                return@withContext Result.failure(Exception("Format de sauvegarde JSON invalide (clÃ©s attendues manquantes)"))
             }
 
             // Restore Members
@@ -1397,7 +1618,7 @@ class SupabaseSyncService(
                     val obj = arr.getJSONObject(i)
                     val cat = CategoryEntity(
                         id = obj.optString("id", UUID.randomUUID().toString()),
-                        name = obj.optString("name", "Catégorie"),
+                        name = obj.optString("name", "CatÃ©gorie"),
                         groupCode = obj.optString("group_code", "U15"),
                         coach1Name = obj.optString("coach1_name", ""),
                         coach2Name = obj.optString("coach2_name", ""),
@@ -1415,13 +1636,13 @@ class SupabaseSyncService(
                     entityName = "ALL",
                     entityId = "BACKUP_RESTORE",
                     operationType = "BACKUP_RESTORE",
-                    details = "Restauration terminée : $restoredMembers membres, $restoredAttendances présences, $restoredCategories catégories"
+                    details = "Restauration terminÃ©e : $restoredMembers membres, $restoredAttendances prÃ©sences, $restoredCategories catÃ©gories"
                 )
             )
 
-            Result.success("Restauration réussie : $restoredMembers adhérents, $restoredAttendances pointages réintégrés.")
+            Result.success("Restauration rÃ©ussie : $restoredMembers adhÃ©rents, $restoredAttendances pointages rÃ©intÃ©grÃ©s.")
         } catch (e: Exception) {
-            Result.failure(Exception("Échec de la restauration : ${e.message}"))
+            Result.failure(Exception("Ã‰chec de la restauration : ${e.message}"))
         }
     }
 
@@ -1442,3 +1663,5 @@ class SupabaseSyncService(
         return sdf.format(Date())
     }
 }
+
+

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,6 +43,7 @@ import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.QrCode
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SportsMartialArts
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -52,6 +54,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -118,12 +121,52 @@ private suspend fun resolveMemberPhoto(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+private fun MemberFormSection(index: String, title: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(JudoRed.copy(alpha = 0.12f)),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = index,
+                color = JudoRed,
+                fontWeight = FontWeight.Black,
+                fontSize = 13.sp
+            )
+        }
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = JudoRed,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+        )
+        HorizontalDivider(
+            modifier = Modifier.weight(1f),
+            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
 fun AddEditMemberDialog(
     initialMember: Member?,
     initialExtractedInfo: ExtractedMemberInfo? = null,
     coachProfile: CoachProfile = CoachProfile(),
     onRequestScanCard: (() -> Unit)? = null,
     onEditCoachProfile: (() -> Unit)? = null,
+    findDuplicate: (Member) -> Member? = { null },
     onSave: (Member) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -180,6 +223,7 @@ fun AddEditMemberDialog(
     var isRealCardScanDialogOpen by remember { mutableStateOf(false) }
 
     var errorMsg by remember { mutableStateOf("") }
+    var submitAttempted by remember { mutableStateOf(false) }
 
     // Android zero-permission Photo Picker for Adherent
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -204,6 +248,7 @@ fun AddEditMemberDialog(
         }
         if (info.phone.isNotBlank()) phone = info.phone
         if (info.qrCode.isNotBlank()) qrCode = info.qrCode
+        else if (info.cardNumber.isNotBlank()) qrCode = com.example.util.MemberQr.PREFIX + info.cardNumber
         if (info.season.isNotBlank()) season = info.season
         if (info.notes.isNotBlank()) notes = info.notes
         if (info.photoUrl.isNotBlank()) photoUrl = info.photoUrl
@@ -238,20 +283,17 @@ fun AddEditMemberDialog(
             modifier = Modifier
                 .widthIn(max = 680.dp)
                 .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.92f)
                 .imePadding()
                 .padding(vertical = 16.dp)
                 .testTag("add_edit_member_dialog")
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Header Bar with Club branding & Title
+            Column(modifier = Modifier.fillMaxWidth()) {
+                // Header Bar with Club branding & Title (fixe : reste visible pendant le defilement)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 12.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -302,6 +344,18 @@ fun AddEditMemberDialog(
                         Icon(imageVector = Icons.Default.Close, contentDescription = "Fermer")
                     }
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
+
+                // Contenu defilant (le pied de page avec les boutons reste toujours visible)
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                ) {
 
                 // Smart Detection Banner if from QR Scan
                 if (isFromCardScan) {
@@ -515,9 +569,19 @@ fun AddEditMemberDialog(
                         ) {
                             OutlinedButton(
                                 onClick = {
-                                    photoPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
+                                    // Certains appareils n'ont aucun sélecteur de photos :
+                                    // on intercepte l'erreur pour ne pas fermer l'application.
+                                    try {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    } catch (e: Exception) {
+                                        errorMsg = if (e is android.content.ActivityNotFoundException) {
+                                            "Aucune galerie photo disponible sur cet appareil."
+                                        } else {
+                                            "Impossible d'ouvrir la galerie : ${e.message ?: "erreur inconnue"}"
+                                        }
+                                    }
                                 },
                                 shape = RoundedCornerShape(10.dp),
                                 modifier = Modifier.testTag("adherent_pick_photo_button")
@@ -556,10 +620,7 @@ fun AddEditMemberDialog(
                 // ==========================================
                 // SECTION 2: IDENTITÉ DE L'ADHÉRENT
                 // ==========================================
-                Text(
-                    text = "1. Identité Civile",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = JudoRed)
-                )
+                MemberFormSection("1", "Identité civile", Icons.Default.Person)
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -567,10 +628,14 @@ fun AddEditMemberDialog(
                 ) {
                     OutlinedTextField(
                         value = firstName,
-                        onValueChange = { firstName = it },
+                        onValueChange = { firstName = it; errorMsg = "" },
                         label = { Text("Prénom *") },
                         placeholder = { Text("ex: Babi") },
                         singleLine = true,
+                        isError = submitAttempted && firstName.isBlank(),
+                        supportingText = if (submitAttempted && firstName.isBlank()) {
+                            { Text("Prénom obligatoire") }
+                        } else null,
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.Person, contentDescription = null)
                         },
@@ -581,10 +646,14 @@ fun AddEditMemberDialog(
 
                     OutlinedTextField(
                         value = lastName,
-                        onValueChange = { lastName = it },
+                        onValueChange = { lastName = it; errorMsg = "" },
                         label = { Text("Nom *") },
                         placeholder = { Text("ex: BOURENANE") },
                         singleLine = true,
+                        isError = submitAttempted && lastName.isBlank(),
+                        supportingText = if (submitAttempted && lastName.isBlank()) {
+                            { Text("Nom obligatoire") }
+                        } else null,
                         modifier = Modifier
                             .weight(1f)
                             .testTag("input_last_name")
@@ -616,14 +685,14 @@ fun AddEditMemberDialog(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = if (calculatedAge != null) "🎂 Âge calculé: $calculatedAge ans" else "🎂 Format: AAAA-MM-JJ",
+                            text = if (calculatedAge != null) "Âge calculé : $calculatedAge ans" else "Format attendu : AAAA-MM-JJ",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontWeight = FontWeight.Bold
                             )
                         )
                         Text(
-                            text = "Catégorie suggérée: ${selectedGroup.label}",
+                            text = "Catégorie suggérée : ${selectedGroup.label}",
                             style = MaterialTheme.typography.labelSmall.copy(
                                 color = JudoRed,
                                 fontWeight = FontWeight.Bold
@@ -635,10 +704,7 @@ fun AddEditMemberDialog(
                 // ==========================================
                 // SECTION 3: SECTION SPORTIVE & GRADES JUDO
                 // ==========================================
-                Text(
-                    text = "2. Catégorie & Grade Martial",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = JudoRed)
-                )
+                MemberFormSection("2", "Catégorie & grade", Icons.Default.SportsMartialArts)
 
                 // Category Dropdown
                 ExposedDropdownMenuBox(
@@ -688,7 +754,7 @@ fun AddEditMemberDialog(
                     onExpandedChange = { isBeltExpanded = !isBeltExpanded }
                 ) {
                     OutlinedTextField(
-                        value = "🥋 ${selectedBelt.displayName}",
+                        value = selectedBelt.displayName,
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("Ceinture / Grade") },
@@ -739,20 +805,20 @@ fun AddEditMemberDialog(
                 // ==========================================
                 // SECTION 4: COORDONNÉES & TUTEUR LÉGAL
                 // ==========================================
-                Text(
-                    text = "3. Contact & Tuteur Légal",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = JudoRed)
-                )
+                MemberFormSection("3", "Contact du tuteur", Icons.Default.Phone)
 
                 OutlinedTextField(
                     value = phone,
                     onValueChange = { phone = it },
-                    label = { Text("Téléphone Tuteur / Parent *") },
+                    label = { Text("Téléphone tuteur / parent *") },
                     placeholder = { Text("0782487120") },
                     leadingIcon = {
                         Icon(imageVector = Icons.Default.Phone, contentDescription = null)
                     },
                     singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Phone
+                    ),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("input_phone")
@@ -769,10 +835,7 @@ fun AddEditMemberDialog(
                 // ==========================================
                 // SECTION 5: LICENCE & IDENTIFIANT QR
                 // ==========================================
-                Text(
-                    text = "4. Licence & Badge QR",
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, color = JudoRed)
-                )
+                MemberFormSection("4", "Licence & badge QR", Icons.Default.QrCode)
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -900,18 +963,39 @@ fun AddEditMemberDialog(
                 }
 
                 if (errorMsg.isNotBlank()) {
-                    Text(
-                        text = errorMsg,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = MaterialTheme.colorScheme.errorContainer,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onErrorContainer,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Text(
+                                text = errorMsg,
+                                color = MaterialTheme.colorScheme.onErrorContainer,
+                                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
+                            )
+                        }
+                    }
+                }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
 
-                // Actions Buttons
+                // Actions Buttons (pied de page fixe)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 14.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     OutlinedButton(
@@ -926,6 +1010,7 @@ fun AddEditMemberDialog(
 
                     Button(
                         onClick = {
+                            submitAttempted = true
                             if (firstName.isBlank() || lastName.isBlank()) {
                                 errorMsg = "Veuillez renseigner le prénom et le nom de l'adhérent."
                                 return@Button
@@ -936,8 +1021,34 @@ fun AddEditMemberDialog(
                             }
                             val cleanBirthDate = birthDate.trim()
                             val cleanPhone = phone.trim()
-                            val cleanQr = qrCode.trim().ifBlank { "JCS-${System.currentTimeMillis().toString().takeLast(4)}" }
+                            val cleanQr = com.example.util.MemberQr
+                                .normalize(qrCode, lastExtractedCardNumber)
+                                .ifBlank { "JCS-${System.currentTimeMillis().toString().takeLast(4)}" }
                             val photoKey = initialMember?.id?.takeIf { it > 0 }?.toString() ?: cleanQr
+
+                            // Anti-doublon : refuser d'enregistrer un athlete deja existant.
+                            val candidate = (initialMember ?: Member(
+                                qrCode = cleanQr,
+                                firstName = "",
+                                lastName = "",
+                                birthDate = "",
+                                phone = "",
+                                groupCode = selectedGroup.code,
+                                beltName = selectedBelt.name
+                            )).copy(
+                                firstName = firstName.trim(),
+                                lastName = lastName.trim(),
+                                birthDate = cleanBirthDate,
+                                phone = cleanPhone,
+                                qrCode = cleanQr
+                            )
+                            val duplicate = findDuplicate(candidate)
+                            if (duplicate != null) {
+                                errorMsg = "Cet athlète existe déjà : ${duplicate.fullName} " +
+                                    "(${duplicate.qrCode}). Doublon refusé. " +
+                                    "Modifiez la fiche existante si nécessaire."
+                                return@Button
+                            }
 
                             scope.launch {
                                 val resolvedPhoto = resolveMemberPhoto(context, photoUrl.trim(), photoKey)

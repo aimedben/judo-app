@@ -32,13 +32,13 @@ enum class JudoGroup(
     val label: String,
     val ageRange: String
 ) {
-    EVEIL("EVEIL", "Éveil Judo", "4-5 ans"),
-    MINI_POUSSINS("U9", "Mini-Poussins (U9)", "6-7 ans"),
-    POUSSINS("U11", "Poussins (U11)", "8-9 ans"),
-    BENJAMINS("U13", "Benjamins (U13)", "10-11 ans"),
-    MINIMES("U15", "Minimes (U15)", "12-13 ans"),
-    CADETS("U18", "Cadets (U18)", "14-16 ans"),
-    SENIORS("SENIOR", "Juniors / Séniors", "17+ ans");
+    EVEIL("EVEIL", "Éveil Judo", "2020-2021-2022"),
+    MINI_POUSSINS("U9", "Mini-Poussins (U9)", "2018-2019"),
+    POUSSINS("U11", "Poussins (U11)", "2017"),
+    BENJAMINS("U13", "Benjamins (U13)", "2016-2015"),
+    MINIMES("U15", "Minimes (U15)", "2013-2014"),
+    CADETS("U18", "Cadets (U18)", "2012 et moins"),
+    SENIORS("SENIOR", "Juniors / Séniors", "2012 et moins");
 
     companion object {
         fun fromString(value: String): JudoGroup {
@@ -84,3 +84,4 @@ enum class JudoGroup(
 val Belt.frenchName: String get() = displayName
 val JudoGroup.frenchName: String get() = label
 val JudoGroup.frenchLabel: String get() = label
+

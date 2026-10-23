@@ -51,9 +51,12 @@ import coil.compose.AsyncImage
 import com.example.data.model.Belt
 import com.example.data.model.JudoGroup
 import com.example.data.model.Member
+import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.ui.theme.JudoWarning
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 
 @Composable
 fun BeltBadge(
@@ -241,6 +244,13 @@ fun CheckInConfirmationDialog(
     onDismiss: () -> Unit,
     onViewProfile: (Long) -> Unit
 ) {
+    // Fermeture automatique : la confirmation disparait d'elle-meme apres 2 s
+    // (le coach enchaine les scans, il ne clique pas sur le bouton a chaque fois).
+    LaunchedEffect(member.id) {
+        delay(2000L)
+        onDismiss()
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(20.dp),
@@ -303,7 +313,8 @@ fun CheckInConfirmationDialog(
                         JudokaAvatar(
                             name = member.fullName,
                             belt = member.belt,
-                            sizeDp = 56
+                            photoUrl = member.photoUrl,
+                            sizeDp = 72
                         )
 
                         Text(
@@ -432,6 +443,87 @@ fun AlreadyCheckedInDialog(
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("already_dialog_close_button")
+                ) {
+                    Text("OK", color = MaterialTheme.colorScheme.onSurface)
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Une carte inconnue portant une identité complète vient de créer une fiche.
+ * Ce n'est PAS un pointage : l'athlète reste « Absent / Non pointé » et le coach
+ * doit rescanner la carte pour le marquer présent.
+ */
+@Composable
+fun RegistrationOnlyDialog(
+    member: Member,
+    onDismiss: () -> Unit
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Card(
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            border = CardDefaults.outlinedCardBorder(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            modifier = Modifier
+                .widthIn(max = 480.dp)
+                .fillMaxWidth()
+                .padding(8.dp)
+                .testTag("registration_only_dialog")
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(68.dp)
+                        .clip(CircleShape)
+                        .background(JudoGold.copy(alpha = 0.15f))
+                        .border(2.dp, JudoGold, CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Person,
+                        contentDescription = "Fiche créée",
+                        tint = JudoGold,
+                        modifier = Modifier.size(40.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Fiche créée — non pointé",
+                    style = MaterialTheme.typography.titleLarge.copy(
+                        fontWeight = FontWeight.Bold,
+                        color = JudoGold
+                    ),
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Text(
+                    text = "${member.fullName} a été enregistré(e) comme nouvel athlète. " +
+                        "Aucune présence n'a été comptée : scannez à nouveau sa carte pour le/la pointer.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    textAlign = TextAlign.Center,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                Button(
+                    onClick = onDismiss,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("registration_dialog_close_button")
                 ) {
                     Text("OK", color = MaterialTheme.colorScheme.onSurface)
                 }

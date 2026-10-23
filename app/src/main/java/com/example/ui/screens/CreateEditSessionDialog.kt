@@ -149,8 +149,7 @@ fun CreateEditSessionDialog(
         mutableStateOf(initialSession?.isRecurringWeekly ?: true)
     }
 
-    // 7. Nombre de semaines de répétition
-    var repeatWeeksCount by remember { mutableStateOf(12) }
+    // 7. Fin de la periode officielle du creneau (optionnel)
     var recurrenceEndDate by remember {
         mutableStateOf(initialSession?.recurrenceEndDate ?: "2027-01-15")
     }
@@ -308,7 +307,7 @@ fun CreateEditSessionDialog(
                                         ) {
                                             Text(cat.name, fontWeight = FontWeight.SemiBold)
                                             Text(
-                                                cat.groupCode,
+                                                cat.groupLabel,
                                                 style = MaterialTheme.typography.labelSmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
                                             )
                                         }
@@ -384,7 +383,7 @@ fun CreateEditSessionDialog(
                                         }
                                     }
 
-                                    if (activeCategory != null && (activeCategory.coach1Name.equals(coach.name, ignoreCase = true) || activeCategory.coach2Name.equals(coach.name, ignoreCase = true))) {
+                                    if (activeCategory != null && com.example.util.CoachNameKey.same(activeCategory.coach1Name, coach.name) || activeCategory != null && com.example.util.CoachNameKey.same(activeCategory.coach2Name, coach.name)) {
                                         Surface(
                                             shape = RoundedCornerShape(6.dp),
                                             color = JudoGold.copy(alpha = 0.15f)
@@ -737,7 +736,7 @@ fun CreateEditSessionDialog(
                                             dayOfWeekName = day,
                                             formattedDisplayDate = "$day $dateString"
                                         ),
-                                        if (isRecurringWeekly) repeatWeeksCount else 1
+                                        1
                                     )
                                 } else {
                                     selectedDays.forEach { dayName ->
@@ -746,7 +745,7 @@ fun CreateEditSessionDialog(
                                             dayOfWeekName = dayName,
                                             formattedDisplayDate = "$dayName $dateString"
                                         )
-                                        onSaveSession(s, if (isRecurringWeekly) repeatWeeksCount else 1)
+                                        onSaveSession(s, 1)
                                     }
                                 }
                                 onDismiss()

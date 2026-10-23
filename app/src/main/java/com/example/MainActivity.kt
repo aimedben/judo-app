@@ -91,6 +91,8 @@ import com.example.ui.components.AlreadyCheckedInDialog
 import com.example.ui.components.AssociateCardDialog
 import com.example.ui.components.CheckInConfirmationDialog
 import com.example.ui.components.CoachProfileDialog
+import com.example.ui.components.ConfirmAddMemberDialog
+import com.example.ui.components.RegistrationOnlyDialog
 import com.example.ui.screens.AdminAttendanceOverviewScreen
 import com.example.ui.screens.AdminCategoriesScreen
 import com.example.ui.screens.AdminCoachesScreen
@@ -123,7 +125,9 @@ import androidx.compose.material.icons.filled.SportsMartialArts
 import com.example.ui.theme.JudoGoldBright
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.MyApplicationTheme
+import com.example.util.AttendancePolicy
 import com.example.util.DouchetteReceiver
+import com.example.util.MemberDuplicates
 import com.example.util.SessionScope
 
 enum class ScreenTab(val label: String, val icon: ImageVector) {
@@ -276,6 +280,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     val activeCheckInResult by viewModel.activeCheckInResult.collectAsState()
     val unassignedQrCode by viewModel.unassignedQrCode.collectAsState()
     val scannedMemberForCreation by viewModel.scannedMemberForCreation.collectAsState()
+    val pendingMemberRegistration by viewModel.pendingMemberRegistration.collectAsState()
     val scheduledSessions by viewModel.scheduledSessions.collectAsStateWithLifecycle()
 
     val supabaseConfig by viewModel.supabaseConfig.collectAsStateWithLifecycle()
@@ -294,23 +299,43 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         }
     }
 
-    val topStats = remember(allMembers, allAttendance, dashboardPeriod) {
-        viewModel.getTopAttendanceList(allMembers, allAttendance, dashboardPeriod)
+    val topStats = remember(allMembers, allAttendance, dashboardPeriod, clubSettings.officialStartDate) {
+        viewModel.getTopAttendanceList(
+            allMembers,
+            allAttendance,
+            dashboardPeriod,
+            clubSettings.officialStartDate
+        )
     }
 
-    // Filter members for active coach session category
+    // Filter members for active coach session category.
+    // Une categorie peut couvrir plusieurs groupes ("Cadets, Juniors & Seniors" = U18+SENIOR).
     val categoryMembers = remember(allMembers, selectedCategory) {
         if (selectedCategory == null) allMembers
-        else allMembers.filter { it.groupCode.equals(selectedCategory!!.groupCode, ignoreCase = true) }
+        else allMembers.filter { selectedCategory!!.covers(it.groupCode) }
     }
 
-    val sessionAttendances = remember(todayAttendance, selectedCategory, sessionForSelectedCategory) {
-        val base = if (selectedCategory == null) todayAttendance
-        else todayAttendance.filter { it.groupCode.equals(selectedCategory!!.groupCode, ignoreCase = true) }
-        // A new session must start with an empty pointage: only check-ins recorded
-        // at/after the session start count as present for THIS session.
-        val startTs = sessionForSelectedCategory?.startTimestamp
-        if (startTs == null) base else base.filter { it.timestamp >= startTs }
+    // Pointages du jour pour la catégorie sélectionnée. Portée « journée » : sert
+    // uniquement aux badges « présent aujourd'hui », indépendants d'une séance.
+    val categoryTodayAttendances = remember(todayAttendance, selectedCategory) {
+        if (selectedCategory == null) todayAttendance
+        else todayAttendance.filter { selectedCategory!!.covers(it.groupCode) }
+    }
+
+    // Pointage de la séance EN COURS uniquement.
+    // - Aucune séance active ⇒ liste vide : la présence d'une séance précédente n'est
+    //   jamais réutilisée et une nouvelle séance démarre toujours à 0 présent.
+    // - Un athlète n'est présent que s'il a été scanné pendant CETTE séance.
+    // - Dédoublonnage par athlète : les compteurs ne bougent qu'une fois par pointage.
+    val sessionAttendances = remember(categoryTodayAttendances, sessionForSelectedCategory) {
+        val startTs = sessionForSelectedCategory?.startTimestamp ?: return@remember emptyList()
+        val presentIds = AttendancePolicy.presentMemberIds(
+            startTs,
+            categoryTodayAttendances.map { it.memberId to it.timestamp }
+        )
+        categoryTodayAttendances
+            .filter { it.timestamp >= startTs && it.memberId in presentIds }
+            .distinctBy { it.memberId }
     }
 
     val context = LocalContext.current
@@ -411,7 +436,8 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                 showQuitSyncDialog = true
             },
             isDarkTheme = isDarkTheme,
-            onToggleTheme = { viewModel.toggleTheme() }
+            onToggleTheme = { viewModel.toggleTheme() },
+            coaches = coaches
         )
 
         if (isAdminPinDialogOpen) {
@@ -464,6 +490,10 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                                     presentAttendances = sessionAttendances
                                 )
                                 isSessionSummaryShown = false
+                            },
+                            onCancelSession = {
+                                isSessionSummaryShown = false
+                                viewModel.selectCategory(null)
                             }
                         )
                     } else if (sessionForSelectedCategory != null) {
@@ -475,6 +505,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             scanFeedback = coachScanFeedback,
                             onOpenScanner = { isCoachCameraScannerOpen = true },
                             onManualCheckInMember = { member -> viewModel.manualCheckIn(member.id) },
+                            onNumeroScanned = { code -> code?.let { viewModel.onQrScanned(it) } },
                             onFinishSession = { isSessionSummaryShown = true },
                             onDismissFeedback = { viewModel.clearCoachScanFeedback() }
                         )
@@ -483,6 +514,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         CoachSessionPreparationScreen(
                             category = selectedCategory!!,
                             onBack = { isPreparingSession = false },
+                            coaches = coaches,
                             onStartTraining = { session ->
                                 viewModel.startSession(session)
                                 isPreparingSession = false
@@ -496,7 +528,8 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         CoachMinimalHomeScreen(
                             category = selectedCategory!!,
                             onChangeCategory = { viewModel.selectCategory(null) },
-                            onStartNewSession = { isPreparingSession = true }
+                            onStartNewSession = { isPreparingSession = true },
+                            coaches = coaches
                         )
                     }
                 }
@@ -504,7 +537,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                     CoachAthletesScreen(
                         category = selectedCategory!!,
                         members = categoryMembers,
-                        todayAttendances = sessionAttendances,
+                        todayAttendances = categoryTodayAttendances,
                         onManualCheckIn = { member -> viewModel.manualCheckIn(member.id) }
                     )
                 }
@@ -521,7 +554,8 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         category = selectedCategory!!,
                         isDarkTheme = isDarkTheme,
                         onToggleTheme = { viewModel.toggleTheme() },
-                        onChangeCategory = { viewModel.selectCategory(null) }
+                        onChangeCategory = { viewModel.selectCategory(null) },
+                        coaches = coaches
                     )
                 }
             }
@@ -712,6 +746,12 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                     onDismiss = { viewModel.dismissCheckInDialog() }
                 )
             }
+            is CheckInResult.Registered -> {
+                RegistrationOnlyDialog(
+                    member = result.member,
+                    onDismiss = { viewModel.dismissCheckInDialog() }
+                )
+            }
             else -> Unit
         }
         return
@@ -868,6 +908,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onAddCategory = { viewModel.addCategory(it) },
                         onUpdateCategory = { viewModel.updateCategory(it) },
                         onToggleCategoryActive = { viewModel.toggleCategoryActive(it) },
+                        onDeleteCategory = { viewModel.deleteCategory(it) },
                         onCorrectAttendance = { sId, mName, pres -> viewModel.correctSessionAttendance(sId, mName, pres) },
                         onSetThemePreference = { viewModel.setThemePreference(it) },
                         onUpdateClubSettings = { viewModel.updateClubSettings(it) },
@@ -880,6 +921,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onUpdateScheduledSession = { s -> viewModel.updateScheduledSession(s) },
                         onDuplicateScheduledSession = { s -> viewModel.duplicateScheduledSession(s) },
                         onDeleteScheduledSession = { id, scope -> viewModel.deleteScheduledSession(id, scope) },
+                        onDeletePastSessions = { ids -> viewModel.deletePastSessions(ids) },
                         onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) }
                     )
                 }
@@ -997,6 +1039,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onAddCategory = { viewModel.addCategory(it) },
                         onUpdateCategory = { viewModel.updateCategory(it) },
                         onToggleCategoryActive = { viewModel.toggleCategoryActive(it) },
+                        onDeleteCategory = { viewModel.deleteCategory(it) },
                         onCorrectAttendance = { sId, mName, pres -> viewModel.correctSessionAttendance(sId, mName, pres) },
                         onSetThemePreference = { viewModel.setThemePreference(it) },
                         onUpdateClubSettings = { viewModel.updateClubSettings(it) },
@@ -1010,6 +1053,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onUpdateScheduledSession = { s -> viewModel.updateScheduledSession(s) },
                         onDuplicateScheduledSession = { s -> viewModel.duplicateScheduledSession(s) },
                         onDeleteScheduledSession = { id, scope -> viewModel.deleteScheduledSession(id, scope) },
+                        onDeletePastSessions = { ids -> viewModel.deletePastSessions(ids) },
                         onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) }
                     )
                 }
@@ -1055,6 +1099,12 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                 onDismiss = { viewModel.dismissCheckInDialog() }
             )
         }
+        is CheckInResult.Registered -> {
+            RegistrationOnlyDialog(
+                member = result.member,
+                onDismiss = { viewModel.dismissCheckInDialog() }
+            )
+        }
         else -> Unit
     }
 
@@ -1075,6 +1125,15 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         )
     }
 
+    // Athlete inconnu : information + acceptation AVANT tout ajout (jamais automatique)
+    if (pendingMemberRegistration != null) {
+        ConfirmAddMemberDialog(
+            extracted = pendingMemberRegistration!!.extracted,
+            onConfirm = { viewModel.confirmPendingMemberRegistration() },
+            onDismiss = { viewModel.cancelPendingMemberRegistration() }
+        )
+    }
+
     // Scanned Card Auto-Extraction Dialog for Member Registration!
     if (scannedMemberForCreation != null) {
         AddEditMemberDialog(
@@ -1088,6 +1147,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                 scannerMode = ScannerTargetMode.EXTRACTION_MEMBRE
                 currentTab = ScreenTab.HOME
             },
+            findDuplicate = { candidate -> MemberDuplicates.find(allMembers, candidate) },
             onSave = { newMember ->
                 viewModel.saveMember(newMember)
                 viewModel.clearScannedMemberForCreation()
@@ -1102,6 +1162,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
             initialMember = memberToEdit,
             coachProfile = coachProfile,
             onEditCoachProfile = { isCoachProfileDialogOpen = true },
+            findDuplicate = { candidate -> MemberDuplicates.find(allMembers, candidate) },
             onSave = { updated ->
                 viewModel.saveMember(updated)
                 memberToEdit = null
@@ -1175,6 +1236,7 @@ private fun AppScreenContent(
     onAddCategory: (JudoCategory) -> Unit = {},
     onUpdateCategory: (JudoCategory) -> Unit = {},
     onToggleCategoryActive: (String) -> Unit = {},
+    onDeleteCategory: (String) -> Unit = {},
     onCorrectAttendance: (String, String, Boolean) -> Unit = { _, _, _ -> },
     onSetThemePreference: (ThemePreference) -> Unit = {},
     onUpdateClubSettings: (ClubSettings) -> Unit = {},
@@ -1186,6 +1248,7 @@ private fun AppScreenContent(
     onUpdateScheduledSession: (com.example.data.model.ScheduledTrainingSession) -> Unit = {},
     onDuplicateScheduledSession: (com.example.data.model.ScheduledTrainingSession) -> Unit = {},
     onDeleteScheduledSession: (String, com.example.data.model.RecurrenceScope) -> Unit = { _, _ -> },
+    onDeletePastSessions: (List<String>) -> Unit = {},
     onCheckSessionConflicts: (com.example.data.model.ScheduledTrainingSession, String?) -> List<com.example.data.model.SessionConflict> = { _, _ -> emptyList() },
     supabaseConfig: com.example.data.sync.SupabaseConfig = com.example.data.sync.SupabaseConfig(),
     isSyncing: Boolean = false,
@@ -1219,6 +1282,8 @@ private fun AppScreenContent(
                 member = member,
                 attendanceList = memberAttendances,
                 allClubAttendances = allAttendance,
+                scheduledSessions = scheduledSessions,
+                officialStartDate = clubSettings.officialStartDate,
                 onBack = onBackFromMemberDetail,
                 onManualCheckIn = onManualCheckIn,
                 onRecordAttendanceForDate = onRecordAttendanceForDate,
@@ -1356,7 +1421,8 @@ private fun AppScreenContent(
                 coachProfile = coachProfile,
                 onEditCoachProfile = onEditCoachProfile,
                 onSelectMember = onSelectMember,
-                onSaveMember = onSaveMember
+                onSaveMember = onSaveMember,
+                categories = categories
             )
         }
         ScreenTab.COACHES -> {
@@ -1377,6 +1443,7 @@ private fun AppScreenContent(
                 onAddCategory = onAddCategory,
                 onUpdateCategory = onUpdateCategory,
                 onToggleCategoryActive = onToggleCategoryActive,
+                onDeleteCategory = onDeleteCategory,
                 onViewCategoryMembers = { onNavigateToTab(ScreenTab.MEMBERS) }
             )
         }
@@ -1393,6 +1460,7 @@ private fun AppScreenContent(
                 onUpdateScheduledSession = onUpdateScheduledSession,
                 onDuplicateScheduledSession = onDuplicateScheduledSession,
                 onDeleteScheduledSession = onDeleteScheduledSession,
+                onDeletePastSessions = onDeletePastSessions,
                 onCheckConflicts = onCheckSessionConflicts,
                 onCorrectAttendance = onCorrectAttendance
             )

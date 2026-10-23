@@ -12,6 +12,7 @@ import androidx.camera.view.PreviewView
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,8 +23,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -35,12 +36,11 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -60,21 +60,27 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import coil.compose.AsyncImage
 import com.example.data.model.ActiveTrainingSession
 import com.example.data.model.AttendanceWithMember
 import com.example.data.model.CoachScanFeedback
+import com.example.data.model.CoachUser
 import com.example.data.model.JudoCategory
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.CoachNameKey
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.common.InputImage
 import kotlinx.coroutines.delay
@@ -87,6 +93,162 @@ import java.util.concurrent.atomic.AtomicLong
 private fun coachTimeNow(): String = SimpleDateFormat("HH:mm", Locale.FRENCH).format(Date())
 private fun coachDateToday(): String = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
 
+/** Resout la fiche coach (donc sa photo) a partir du nom enregistre sur la categorie. */
+@Composable
+private fun coachForName(coaches: List<CoachUser>, name: String): CoachUser? =
+    remember(coaches, name) { coaches.firstOrNull { CoachNameKey.same(it.name, name) } }
+
+private fun coachInitials(name: String): String =
+    name.trim()
+        .split(Regex("\\s+"))
+        .filter { it.isNotBlank() }
+        .take(2)
+        .joinToString("") { it.first().uppercaseChar().toString() }
+        .ifBlank { "?" }
+
+/**
+ * Photo ronde d'un coach (repli sur les initiales si aucune photo n'est disponible).
+ * Utilisee sur l'accueil coach et sur l'ecran de preparation de seance.
+ */
+@Composable
+private fun CoachRoundAvatar(
+    name: String,
+    photoPath: String,
+    size: Dp = 48.dp,
+    ringColor: Color? = null,
+    modifier: Modifier = Modifier
+) {
+    var photoFailed by remember(photoPath) { mutableStateOf(false) }
+    val showPhoto = photoPath.isNotBlank() && !photoFailed
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(JudoRed.copy(alpha = 0.12f))
+            .then(
+                if (ringColor != null) Modifier.border(2.dp, ringColor, CircleShape) else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (showPhoto) {
+            AsyncImage(
+                model = photoPath,
+                contentDescription = "Photo de ${name.ifBlank { "coach" }}",
+                contentScale = ContentScale.Crop,
+                onError = { photoFailed = true },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else {
+            Text(
+                text = coachInitials(name),
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black),
+                color = JudoRed
+            )
+        }
+    }
+}
+
+/** Ligne identite coach : photo + nom + role (accueil coach). */
+@Composable
+private fun CoachIdentityRow(
+    role: String,
+    name: String,
+    photoPath: String,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        CoachRoundAvatar(name = name, photoPath = photoPath, size = 44.dp)
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = name,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = role,
+                style = MaterialTheme.typography.bodySmall.copy(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            )
+        }
+    }
+}
+
+/** Carte de presence d'un coach (preparation de seance) : photo, nom, role, coche verte. */
+@Composable
+private fun CoachPresenceCard(
+    name: String,
+    role: String,
+    photoPath: String,
+    present: Boolean,
+    onToggle: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Card(
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (present) JudoSuccess.copy(alpha = 0.10f) else MaterialTheme.colorScheme.surface
+        ),
+        border = BorderStroke(
+            if (present) 2.dp else 1.dp,
+            if (present) JudoSuccess else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
+        ),
+        modifier = modifier.clickable(onClick = onToggle)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Box(contentAlignment = Alignment.BottomEnd) {
+                CoachRoundAvatar(
+                    name = name,
+                    photoPath = photoPath,
+                    size = 64.dp,
+                    ringColor = if (present) JudoSuccess else null
+                )
+                if (present) {
+                    Box(
+                        modifier = Modifier
+                            .size(22.dp)
+                            .clip(CircleShape)
+                            .background(JudoSuccess),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Check,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+            Text(
+                text = name,
+                style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
+                textAlign = TextAlign.Center,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = role,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
 /**
  * Screen 1 — Minimalist coach home. Shown when a coach has selected a category but no
  * training session is running yet. Focus on a single, prominent "Nouvelle séance" action.
@@ -96,8 +258,11 @@ fun CoachMinimalHomeScreen(
     category: JudoCategory,
     onChangeCategory: () -> Unit,
     onStartNewSession: () -> Unit,
+    coaches: List<CoachUser> = emptyList(),
     modifier: Modifier = Modifier
 ) {
+    val coach1 = coachForName(coaches, category.coach1Name)
+    val coach2 = coachForName(coaches, category.coach2Name)
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -177,7 +342,7 @@ fun CoachMinimalHomeScreen(
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
                         Text(
-                            text = "Groupe ${category.groupCode}",
+                            text = "Groupe ${category.groupLabel}",
                             style = MaterialTheme.typography.bodySmall.copy(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -192,37 +357,17 @@ fun CoachMinimalHomeScreen(
                         .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.15f))
                 )
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text(
-                        text = "Entraîneur principal",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-                    Text(
-                        text = category.coach1Name,
-                        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
-                    )
-                }
+                CoachIdentityRow(
+                    role = "Entraîneur principal",
+                    name = category.coach1Name,
+                    photoPath = coach1?.photoPath.orEmpty()
+                )
                 if (category.coach2Name.isNotBlank()) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(
-                            text = "Co-entraîneur",
-                            style = MaterialTheme.typography.bodySmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        )
-                        Text(
-                            text = category.coach2Name,
-                            style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
+                    CoachIdentityRow(
+                        role = "Co-entraîneur",
+                        name = category.coach2Name,
+                        photoPath = coach2?.photoPath.orEmpty()
+                    )
                 }
             }
         }
@@ -274,12 +419,15 @@ fun CoachSessionPreparationScreen(
     category: JudoCategory,
     onBack: () -> Unit,
     onStartTraining: (ActiveTrainingSession) -> Unit,
+    coaches: List<CoachUser> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     var coach1Present by remember { mutableStateOf(true) }
     var coach2Present by remember { mutableStateOf(category.coach2Name.isNotBlank()) }
     val startTime = remember { coachTimeNow() }
     val startDate = remember { coachDateToday() }
+    val coach1 = coachForName(coaches, category.coach1Name)
+    val coach2 = coachForName(coaches, category.coach2Name)
 
     Column(
         modifier = modifier
@@ -327,7 +475,7 @@ fun CoachSessionPreparationScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(text = "Groupe", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Text(category.groupCode, fontWeight = FontWeight.Bold)
+                    Text(category.groupLabel, fontWeight = FontWeight.Bold)
                 }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -344,40 +492,28 @@ fun CoachSessionPreparationScreen(
             style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
         )
 
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            FilterChip(
-                selected = coach1Present,
-                onClick = { coach1Present = !coach1Present },
-                label = { Text(category.coach1Name, maxLines = 1) },
-                leadingIcon = {
-                    if (coach1Present) {
-                        Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = JudoSuccess,
-                    selectedLabelColor = Color.White,
-                    selectedLeadingIconColor = Color.White
-                )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            CoachPresenceCard(
+                name = category.coach1Name,
+                role = "Entraîneur principal",
+                photoPath = coach1?.photoPath.orEmpty(),
+                present = coach1Present,
+                onToggle = { coach1Present = !coach1Present },
+                modifier = Modifier
+                    .weight(1f)
+                    .testTag("coach_present_card_1")
             )
-        }
-
-        if (category.coach2Name.isNotBlank()) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                FilterChip(
-                    selected = coach2Present,
-                    onClick = { coach2Present = !coach2Present },
-                    label = { Text(category.coach2Name, maxLines = 1) },
-                    leadingIcon = {
-                        if (coach2Present) {
-                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                        }
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = JudoSuccess,
-                        selectedLabelColor = Color.White,
-                        selectedLeadingIconColor = Color.White
-                    )
+            if (category.coach2Name.isNotBlank()) {
+                CoachPresenceCard(
+                    name = category.coach2Name,
+                    role = "Co-entraîneur",
+                    photoPath = coach2?.photoPath.orEmpty(),
+                    present = coach2Present,
+                    onToggle = { coach2Present = !coach2Present },
+                    modifier = Modifier.weight(1f)
                 )
             }
         }
@@ -606,7 +742,7 @@ private fun ScanFeedbackBanner(
 ) {
     LaunchedEffect(feedback) {
         if (feedback != null) {
-            delay(1200)
+            delay(if (feedback is CoachScanFeedback.WrongCategory) 3500 else 1200)
             onDismiss()
         }
     }
@@ -630,6 +766,16 @@ private fun ScanFeedbackBanner(
             bannerIcon = Icons.Default.Check
             bannerTitle = feedback.member.fullName
             bannerSubtitle = "Déjà pointé à ${feedback.timeString}"
+        }
+        is CoachScanFeedback.WrongCategory -> {
+            bannerColor = Color(0xFFE65100)
+            bannerIcon = Icons.Default.Warning
+            bannerTitle = feedback.member.fullName
+            bannerSubtitle = buildString {
+                append("N'appartient pas à cette catégorie")
+                if (feedback.memberGroupLabel.isNotBlank()) append(" (${feedback.memberGroupLabel})")
+                append(" — pointage refusé")
+            }
         }
         is CoachScanFeedback.Invalid -> {
             bannerColor = Color(0xFFD32F2F)

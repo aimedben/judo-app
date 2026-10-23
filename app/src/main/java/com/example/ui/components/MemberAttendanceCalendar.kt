@@ -67,11 +67,39 @@ import java.util.Locale
 // French week day names for calendar headers (Sunday to Saturday: D, L, M, M, J, V, S)
 private val WEEK_DAYS = listOf("D", "L", "M", "M", "J", "V", "S")
 
+/**
+ * Creneau reel d'entrainement, alimente par le planning programme dans
+ * admin > seances (rien n'est code en dur : si le planning change, l'agenda suit).
+ */
+data class TrainingSlot(
+    val dayOfWeekName: String,
+    val startTime: String,
+    val endTime: String,
+    val categoryName: String = ""
+) {
+    val label: String get() = "$dayOfWeekName $startTime–$endTime"
+
+    /** Jour [Calendar] correspondant, ou null si le libelle n'est pas reconnu. */
+    val calendarDayOfWeek: Int?
+        get() = when (dayOfWeekName.trim().lowercase(Locale.FRENCH)) {
+            "dimanche" -> Calendar.SUNDAY
+            "lundi" -> Calendar.MONDAY
+            "mardi" -> Calendar.TUESDAY
+            "mercredi" -> Calendar.WEDNESDAY
+            "jeudi" -> Calendar.THURSDAY
+            "vendredi" -> Calendar.FRIDAY
+            "samedi" -> Calendar.SATURDAY
+            else -> null
+        }
+}
+
 @Composable
 fun MemberAttendanceCalendar(
     member: Member,
     attendanceList: List<Attendance>,
     allClubAttendances: List<AttendanceWithMember> = emptyList(),
+    trainingSlots: List<TrainingSlot> = emptyList(),
+    officialStartDate: String = "",
     onRecordAttendanceForDate: (Long, String) -> Unit = { _, _ -> },
     onDeleteAttendanceForDate: (Long, String) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier
@@ -89,9 +117,10 @@ fun MemberAttendanceCalendar(
         )
     }
 
-    // Default training days: Mercredi (4), Vendredi (6), Samedi (7)
-    val selectedTrainingDays = remember {
-        setOf(Calendar.WEDNESDAY, Calendar.FRIDAY, Calendar.SATURDAY)
+    // Jours d'entrainement REELLEMENT programmes pour la categorie de l'athlete
+    // (planning admin > seances). Aucun jour code en dur : planning vide = aucun jour fixe.
+    val selectedTrainingDays = remember(trainingSlots) {
+        trainingSlots.mapNotNull { it.calendarDayOfWeek }.toSet()
     }
 
     // Selected date to view details
@@ -170,8 +199,11 @@ fun MemberAttendanceCalendar(
 
         val attendance = memberAttendanceMap[dateStr]
         val isPresent = attendance != null
+        // Pointage officiel : rien avant la date de debut reglee par l'admin ne compte
+        // (ni seance, ni absence, ni taux). Les donnees restent en base.
+        val isCounting = com.example.util.OfficialPeriod.isOfficial(dateStr, officialStartDate)
 
-        if (isTrainingDay && isPastOrToday) {
+        if (isTrainingDay && isPastOrToday && isCounting) {
             monthlyTotalTrainingSessions++
             if (isPresent) {
                 monthlyPresentSessions++
@@ -188,6 +220,7 @@ fun MemberAttendanceCalendar(
             isPastOrToday = isPastOrToday,
             isTrainingDay = isTrainingDay,
             isPresent = isPresent,
+            isCounting = isCounting,
             attendance = attendance
         )
     }
@@ -275,6 +308,45 @@ fun MemberAttendanceCalendar(
                             text = "Aujourd'hui",
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
                         )
+                    }
+                }
+            }
+
+            // Planning reel (jours + horaires programmes dans admin > seances)
+            if (trainingSlots.isNotEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = JudoRed.copy(alpha = 0.08f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text(
+                            text = "Entraînements programmés",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.Bold,
+                                color = JudoRed
+                            )
+                        )
+                        trainingSlots.chunked(2).forEach { row ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                row.forEach { slot ->
+                                    Text(
+                                        text = slot.label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                                if (row.size == 1) {
+                                    Spacer(modifier = Modifier.weight(1f))
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -371,10 +443,10 @@ fun MemberAttendanceCalendar(
                 horizontalArrangement = Arrangement.SpaceAround,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                LegendIndicator(color = JudoSuccess, label = "Présent")
-                LegendIndicator(color = JudoRed, label = "Absent")
-                LegendIndicator(color = MaterialTheme.colorScheme.surfaceVariant, label = "Repos")
-                LegendIndicator(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), label = "Prévu")
+            LegendIndicator(color = JudoSuccess, label = "Présent")
+            LegendIndicator(color = JudoRed, label = "Absent")
+            LegendIndicator(color = Color(0xFFBBDEFB), label = "Prévu")
+            LegendIndicator(color = MaterialTheme.colorScheme.surfaceVariant, label = "Repos")
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
@@ -464,6 +536,7 @@ private data class CalendarDayData(
     val isPastOrToday: Boolean,
     val isTrainingDay: Boolean,
     val isPresent: Boolean,
+    val isCounting: Boolean,
     val attendance: Attendance?
 )
 
@@ -496,8 +569,8 @@ private fun CalendarDayCell(
             }
         }
 
-        // TRAINING DAY & MISSED (Past or Today): RED (Rouge)
-        dayData.isTrainingDay && dayData.isPastOrToday -> {
+        // TRAINING DAY & MISSED (Past or Today, dans la periode de pointage): RED (Rouge)
+        dayData.isTrainingDay && dayData.isPastOrToday && dayData.isCounting -> {
             cellColor = JudoRed
             contentColor = Color.White
             borderColor = if (isSelected) Color.White else null
@@ -512,10 +585,10 @@ private fun CalendarDayCell(
         }
 
         // FUTURE TRAINING DAY: Scheduled accent
-        dayData.isTrainingDay && !dayData.isPastOrToday -> {
-            cellColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
-            borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
+                dayData.isTrainingDay && !dayData.isPastOrToday -> {
+                    cellColor = Color(0xFFBBDEFB).copy(alpha = 0.75f)
+                    contentColor = Color(0xFF0D47A1)
+                    borderColor = Color(0xFF64B5F6)
             badgeIcon = {
                 Box(
                     modifier = Modifier
@@ -696,8 +769,44 @@ private fun SelectedDayDetailCard(
                     }
                 }
 
+                // BEFORE OFFICIAL PERIOD: neutral (ne compte pas comme absence)
+                dayData.isTrainingDay && dayData.isPastOrToday && !dayData.isCounting -> {
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        border = CardDefaults.outlinedCardBorder()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Info,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = "Avant le début du pointage",
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                                )
+                                Text(
+                                    text = "Cette séance ne compte pas dans les statistiques",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // MISSED TRAINING: RED
-                dayData.isTrainingDay && dayData.isPastOrToday -> {
+                dayData.isTrainingDay && dayData.isPastOrToday && dayData.isCounting -> {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
                         color = JudoRed.copy(alpha = 0.12f),
@@ -753,7 +862,7 @@ private fun SelectedDayDetailCard(
                 dayData.isTrainingDay && !dayData.isPastOrToday -> {
                     Surface(
                         shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f),
+                        color = Color(0xFFBBDEFB).copy(alpha = 0.45f),
                         border = CardDefaults.outlinedCardBorder()
                     ) {
                         Row(

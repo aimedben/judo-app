@@ -325,7 +325,21 @@ fun SportCardScanDialog(
                                         errorMessage = "Impossible de préparer le fichier photo"
                                     } else {
                                         pendingPhotoUri = uri
-                                        cameraLauncher.launch(uri)
+                                        // Certaines tablettes n'ont aucune application photo
+                                        // installée : launch() lève alors ActivityNotFoundException.
+                                        // On l'intercepte pour éviter de fermer brutalement l'app.
+                                        try {
+                                            cameraLauncher.launch(uri)
+                                        } catch (e: Exception) {
+                                            pendingPhotoUri = null
+                                            errorMessage = if (e is android.content.ActivityNotFoundException) {
+                                                "Aucune application photo disponible sur cet appareil. " +
+                                                    "Utilisez « Choisir une photo de la carte (Galerie) » " +
+                                                    "ou « Scanner en direct »."
+                                            } else {
+                                                "Impossible d'ouvrir l'appareil photo : ${e.message ?: "erreur inconnue"}"
+                                            }
+                                        }
                                     }
                                 },
                                 shape = RoundedCornerShape(14.dp),
@@ -346,9 +360,15 @@ fun SportCardScanDialog(
                             // Option 2: Choose from Gallery / Photo library
                             OutlinedButton(
                                 onClick = {
-                                    photoPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
+                                    // Le sélecteur système peut être absent sur certains
+                                    // appareils : on évite un crash en le capturant.
+                                    try {
+                                        photoPickerLauncher.launch(
+                                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                                        )
+                                    } catch (e: Exception) {
+                                        errorMessage = "Impossible d'ouvrir la galerie : ${e.message ?: "erreur inconnue"}"
+                                    }
                                 },
                                 shape = RoundedCornerShape(14.dp),
                                 modifier = Modifier

@@ -47,6 +47,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AttendanceWithMember
@@ -245,7 +246,7 @@ fun AdminAttendanceOverviewScreen(
                     contentPadding = PaddingValues(bottom = 24.dp)
                 ) {
                     items(categories) { cat ->
-                        val catMembers = allMembers.filter { it.groupCode.equals(cat.groupCode, ignoreCase = true) || it.group.name.equals(cat.name, ignoreCase = true) }
+                        val catMembers = allMembers.filter { cat.covers(it.groupCode) || it.group.name.equals(cat.name, ignoreCase = true) }
                         val catMemberIds = catMembers.map { it.id }.toSet()
                         val catAttendances = periodAttendances.filter { it.memberId in catMemberIds }
                         val uniqueAttendees = catAttendances.map { it.memberId }.distinct().size
@@ -343,12 +344,23 @@ fun AdminAttendanceOverviewScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Text(
-                                        text = "🟢 ${session.presentCount} présents   🔴 ${session.absentCount} absents",
+                                        text = "🟢 ${session.effectivePresentCount} présents   🔴 ${session.effectiveAbsentCount} absents",
                                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold)
                                     )
                                     Text(
                                         text = "Coach : ${session.coach1Name}",
                                         style = MaterialTheme.typography.bodySmall.copy(color = JudoGold)
+                                    )
+                                }
+
+                                if (session.presentMemberNames.isNotEmpty()) {
+                                    Text(
+                                        text = "Présents : " + session.presentMemberNames.joinToString(", "),
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        ),
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
                                     )
                                 }
                             }

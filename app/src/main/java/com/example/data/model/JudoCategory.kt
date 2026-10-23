@@ -1,5 +1,7 @@
 package com.example.data.model
 
+import com.example.util.GroupCodes
+
 data class JudoCategory(
     val id: String,
     val name: String,
@@ -8,7 +10,18 @@ data class JudoCategory(
     val coach2Name: String,
     val description: String = "",
     val isActive: Boolean = true
-)
+) {
+    /** Codes couverts, un par entree : "U18,SENIOR" -> ["U18", "SENIOR"]. */
+    val groupCodes: List<String>
+        get() = GroupCodes.split(groupCode)
+
+    /** Vrai si un athlete du groupe [memberGroupCode] appartient a cette categorie. */
+    fun covers(memberGroupCode: String?): Boolean = GroupCodes.matches(groupCode, memberGroupCode)
+
+    /** Libelle lisible des groupes couverts (ex. « Cadets (U18), Juniors / Seniors »). */
+    val groupLabel: String
+        get() = GroupCodes.label(groupCode)
+}
 
 enum class UserRole {
     COACH,
@@ -46,7 +59,17 @@ data class PastTrainingSession(
     val absentCount: Int,
     val presentMemberNames: List<String> = emptyList(),
     val absentMemberNames: List<String> = emptyList()
-)
+) {
+    /**
+     * Les listes de noms sont la source de vérité : un compteur plus grand que la liste
+     * déclarerait des judokas "présents" qui n'apparaissent nulle part dans l'écran.
+     */
+    val effectivePresentCount: Int
+        get() = presentMemberNames.size
+
+    val effectiveAbsentCount: Int
+        get() = absentMemberNames.size
+}
 
 enum class CoachTab(val label: String) {
     SESSION("Séance"),
@@ -69,6 +92,16 @@ sealed class CoachScanFeedback {
 
     data class Invalid(
         val message: String
+    ) : CoachScanFeedback()
+
+    /**
+     * Athlete reconnu mais rattache a une autre categorie que celle de la seance :
+     * le pointage est refuse et le coach doit voir une alerte explicite.
+     */
+    data class WrongCategory(
+        val member: Member,
+        val memberGroupLabel: String,
+        val sessionCategoryName: String
     ) : CoachScanFeedback()
 }
 

@@ -116,6 +116,7 @@ data class DirectSmsLine(
 fun AbsentSmsDialog(
     absentMembers: List<Member>,
     sessionDate: String,
+    sessionStartTime: String? = null,
     clubName: String,
     onDismiss: () -> Unit
 ) {
@@ -131,6 +132,7 @@ fun AbsentSmsDialog(
         AbsentSmsNotifier.buildMessage(
             memberName = recipient.memberName,
             sessionDate = sessionDate,
+            sessionStart = sessionStartTime,
             clubName = clubName
         )
     }
@@ -169,8 +171,6 @@ fun AbsentSmsDialog(
     // ---- Envoi direct par la SIM (sans quitter l'application) ----------------------------
     val simCapable = remember { SimSmsSender.isDeviceSmsCapable(context) }
     val directLines = remember { mutableStateListOf<DirectSmsLine>() }
-    var directDestinations by remember { mutableStateOf("") }
-    var directMessage by remember { mutableStateOf("Test d'envoi direct SMS depuis l'app Judo Seddouk.") }
     var awaitingDirectAction by remember { mutableStateOf<(() -> Unit)?>(null) }
     val directScope = rememberCoroutineScope()
 
@@ -278,55 +278,9 @@ fun AbsentSmsDialog(
                 )
                 SmsStage.DIRECT -> SmsDirectContent(
                     plan = plan,
-                    destinations = directDestinations,
-                    onDestinationsChange = { directDestinations = it },
-                    message = directMessage,
-                    onMessageChange = { directMessage = it },
                     lines = directLines,
                     simCapable = simCapable,
-                    errorMessage = errorMessage,
-                    onManualSend = { destinationText, messageText ->
-                        errorMessage = null
-                        val parsed = SimSmsSender.parseDestinations(destinationText)
-                        val invalidTokens = destinationText.split(",", ";", "\n")
-                            .map { it.trim() }
-                            .filter { it.isNotEmpty() }
-                            .filter { token ->
-                                AbsentSmsNotifier.normalizePhone(token)?.let { it in parsed } != true
-                            }
-                        when {
-                            parsed.isEmpty() ->
-                                errorMessage = "Aucun numéro de destinataire valide n'a été reconnu."
-                            messageText.isBlank() ->
-                                errorMessage = "Le message est vide : rien à envoyer."
-                        }
-                        if (parsed.isNotEmpty() && messageText.isNotBlank()) {
-                            ensurePermissionThen {
-                                parsed.forEach { number ->
-                                    val key = "$number-${System.nanoTime()}"
-                                    directLines.add(
-                                        DirectSmsLine(
-                                            key = key,
-                                            label = "Destinataire",
-                                            number = number,
-                                            state = "…", isError = false
-                                        )
-                                    )
-                                    launchDirectSend("Destinataire", number, messageText, key)
-                                }
-                            }
-                        }
-                        // Surface les numéros ingérables hors des journaux (aucune donnée
-                        // personnelle ne part en logcat) : un toast suffit côté coach.
-                        if (invalidTokens.isNotEmpty()) {
-                            Toast.makeText(
-                                context,
-                                "Numéros ignorés : " + invalidTokens.joinToString(", ") +
-                                    " (format attendu : 0X XX XX XX XX)",
-                                Toast.LENGTH_LONG
-                            ).show()
-                        }
-                    }
+                    errorMessage = errorMessage
                 )
             }
         },
@@ -575,14 +529,9 @@ private fun SmsRecapContent(
 @Composable
 private fun SmsDirectContent(
     plan: AbsentSmsNotifier.SmsPlan,
-    destinations: String,
-    onDestinationsChange: (String) -> Unit,
-    message: String,
-    onMessageChange: (String) -> Unit,
     lines: List<DirectSmsLine>,
     simCapable: Boolean,
-    errorMessage: String?,
-    onManualSend: (String, String) -> Unit
+    errorMessage: String?
 ) {
     Column(
         modifier = Modifier
@@ -626,40 +575,14 @@ private fun SmsDirectContent(
             )
         }
 
-        OutlinedTextField(
-            value = destinations,
-            onValueChange = onDestinationsChange,
-            label = { Text("Destinataires (numéros séparés par une virgule)") },
-            placeholder = { Text("ex : 0783033616, 0794335010") },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("absent_sms_direct_destinations")
+        Text(
+            text = "Les numéros des parents sont repris automatiquement depuis les fiches " +
+                "des athlètes absents : aucune saisie manuelle n'est nécessaire.",
+            style = MaterialTheme.typography.bodySmall.copy(
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            ),
+            modifier = Modifier.testTag("absent_sms_direct_auto_numbers")
         )
-
-        OutlinedTextField(
-            value = message,
-            onValueChange = onMessageChange,
-            label = { Text("Message") },
-            minLines = 2,
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("absent_sms_direct_message")
-        )
-
-        Button(
-            onClick = { onManualSend(destinations, message) },
-            enabled = simCapable && message.isNotBlank(),
-            colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("absent_sms_direct_manual_send_btn")
-        ) {
-            Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-            Spacer(modifier = Modifier.size(6.dp))
-            Text("Envoyer maintenant (SIM)")
-        }
 
         if (lines.isNotEmpty()) {
             Text(

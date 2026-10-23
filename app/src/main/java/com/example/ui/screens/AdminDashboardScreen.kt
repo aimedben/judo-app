@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AdminNotification
@@ -459,6 +460,16 @@ fun AdminDashboardScreen(
                                                     fontWeight = FontWeight.Medium
                                                 )
                                             )
+                                            if (session.presentMemberNames.isNotEmpty()) {
+                                                Text(
+                                                    text = "Présents : " + session.presentMemberNames.joinToString(", "),
+                                                    style = MaterialTheme.typography.labelSmall.copy(
+                                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                    ),
+                                                    maxLines = 2,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
                                         }
                                     }
 
@@ -468,7 +479,7 @@ fun AdminDashboardScreen(
                                             color = JudoSuccess.copy(alpha = 0.15f)
                                         ) {
                                             Text(
-                                                text = "${session.presentCount} présents",
+                                                text = "${session.effectivePresentCount} présents",
                                                 modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                                 style = MaterialTheme.typography.labelSmall.copy(
                                                     color = JudoSuccess,
@@ -478,7 +489,7 @@ fun AdminDashboardScreen(
                                         }
                                         Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = "${session.absentCount} absents",
+                                            text = "${session.effectiveAbsentCount} absents",
                                             style = MaterialTheme.typography.labelSmall.copy(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )

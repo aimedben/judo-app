@@ -22,6 +22,22 @@ sealed class CheckInResult {
     data class AlreadyCheckedIn(val member: Member, val existingAttendance: Attendance) : CheckInResult()
     data class UnknownQr(val rawCode: String) : CheckInResult()
     data class Error(val message: String) : CheckInResult()
+
+    /**
+     * La fiche de l'athlète vient d'être créée : ce n'est PAS un pointage.
+     * L'athlète reste « Absent / Non pointé » jusqu'à un scan ultérieur.
+     */
+    data class Registered(val member: Member) : CheckInResult()
+
+    /**
+     * L'athlete existe mais n'appartient pas a la categorie de la seance en cours.
+     * Aucune presence n'est enregistree : le pointage est refuse.
+     */
+    data class WrongCategory(
+        val member: Member,
+        val sessionCategoryName: String,
+        val memberGroupCode: String
+    ) : CheckInResult()
 }
 
 data class MemberAttendanceStat(
@@ -75,7 +91,9 @@ class JudoRepository(
     suspend fun processCheckIn(
         rawCode: String,
         method: String = "QR_SCAN",
-        sessionStartTimestamp: Long? = null
+        sessionStartTimestamp: Long? = null,
+        sessionCategoryName: String? = null,
+        sessionGroupCode: String? = null
     ): CheckInResult {
         val cleanCode = rawCode.trim().replace("\n", "").replace("\r", "").replace("\t", "")
         if (cleanCode.isBlank()) return CheckInResult.Error("QR vide")
@@ -83,7 +101,10 @@ class JudoRepository(
         var member = memberDao.getMemberByQrCode(cleanCode)
 
         if (member == null) {
-            val extracted = com.example.util.CardDataParser.parseCardData(cleanCode)
+            // Parse the payload WITH its line breaks: a multi-line card QR
+            // ("JUDO CLUB SEDDOUK\nN: 121\nAdherent: ...") can only be read field by field while
+            // the lines are still separated — flattening it used to hide the "N:" number.
+            val extracted = com.example.util.CardDataParser.parseCardData(rawCode.trim())
             if (extracted.qrCode.isNotBlank()) {
                 member = memberDao.getMemberByQrCode(extracted.qrCode.trim())
             }
@@ -98,12 +119,21 @@ class JudoRepository(
             return CheckInResult.UnknownQr(cleanCode)
         }
 
-        val today = getTodayDateString()
-        val existing = if (sessionStartTimestamp != null) {
-            attendanceDao.findAttendanceSince(member.id, today, sessionStartTimestamp)
-        } else {
-            attendanceDao.findTodayAttendance(member.id, today)
+        // Règle : sans séance active, aucun pointage n'est enregistré (une carte lue
+        // au hasard ne doit jamais créer de présence dans une séance inexistante).
+        if (sessionStartTimestamp == null) {
+            return CheckInResult.Error("Aucune séance en cours : démarrez une séance avant de pointer.")
         }
+
+        // Règle : un athlete d'une AUTRE categorie ne peut jamais etre pointe dans cette
+        // seance. Le refus intervient AVANT toute ecriture : aucune presence n'est creee.
+        val wrongCategory = checkCategory(member, sessionCategoryName, sessionGroupCode)
+        if (wrongCategory != null) return wrongCategory
+
+        // Portée séance : un athlète pointé plus tôt dans une AUTRE séance de la même
+        // journée n'est pas « déjà pointé » — chaque séance a son propre pointage.
+        val today = getTodayDateString()
+        val existing = attendanceDao.findAttendanceSince(member.id, today, sessionStartTimestamp)
         if (existing != null) {
             return CheckInResult.AlreadyCheckedIn(member, existing)
         }
@@ -118,18 +148,29 @@ class JudoRepository(
         )
         val insertedId = attendanceDao.insertAttendance(attendance)
         val finalAtt = attendance.copy(id = insertedId)
-        syncService?.enqueueAttendance(finalAtt)
+        // Pointage 100 % local : plus de sauvegarde cloud (les presences sont resumees
+        // par seance dans past_sessions).
         return CheckInResult.Success(member, finalAtt)
     }
 
-    suspend fun manualCheckIn(memberId: Long, sessionStartTimestamp: Long? = null): CheckInResult {
+    suspend fun manualCheckIn(
+        memberId: Long,
+        sessionStartTimestamp: Long? = null,
+        sessionCategoryName: String? = null,
+        sessionGroupCode: String? = null
+    ): CheckInResult {
         val member = memberDao.getMemberByIdDirect(memberId) ?: return CheckInResult.Error("Membre introuvable")
-        val today = getTodayDateString()
-        val existing = if (sessionStartTimestamp != null) {
-            attendanceDao.findAttendanceSince(member.id, today, sessionStartTimestamp)
-        } else {
-            attendanceDao.findTodayAttendance(member.id, today)
+
+        // Règle : le pointage manuel appartient lui aussi à une séance active.
+        if (sessionStartTimestamp == null) {
+            return CheckInResult.Error("Aucune séance en cours : démarrez une séance avant de pointer.")
         }
+
+        val wrongCategory = checkCategory(member, sessionCategoryName, sessionGroupCode)
+        if (wrongCategory != null) return wrongCategory
+
+        val today = getTodayDateString()
+        val existing = attendanceDao.findAttendanceSince(member.id, today, sessionStartTimestamp)
         if (existing != null) {
             return CheckInResult.AlreadyCheckedIn(member, existing)
         }
@@ -142,76 +183,94 @@ class JudoRepository(
         )
         val insertedId = attendanceDao.insertAttendance(attendance)
         val finalAtt = attendance.copy(id = insertedId)
-        syncService?.enqueueAttendance(finalAtt)
         return CheckInResult.Success(member, finalAtt)
     }
 
+    /**
+     * Controle d'appartenance a la categorie de la seance.
+     * Retourne `null` quand le pointage est autorise (categorie de seance inconnue :
+     * on ne bloque pas), sinon le refus explicite a afficher au coach.
+     */
+    private fun checkCategory(
+        member: Member,
+        sessionCategoryName: String?,
+        sessionGroupCode: String?
+    ): CheckInResult.WrongCategory? {
+        if (sessionGroupCode.isNullOrBlank()) return null
+        if (member.groupCode.isBlank()) return null
+        if (com.example.util.GroupCodes.matches(sessionGroupCode, member.groupCode)) return null
+        return CheckInResult.WrongCategory(
+            member = member,
+            sessionCategoryName = sessionCategoryName.orEmpty(),
+            memberGroupCode = member.groupCode
+        )
+    }
+
     suspend fun associateQrCodeToMember(memberId: Long, qrCode: String) {
-        memberDao.updateMemberQrCode(memberId, qrCode.trim())
+        val clean = com.example.util.MemberQr.normalize(qrCode)
+        if (clean.isBlank()) return
+        memberDao.updateMemberQrCode(memberId, clean)
         memberDao.getMemberByIdDirect(memberId)?.let {
             syncService?.enqueueMember(it, "UPDATE")
         }
     }
 
     suspend fun insertMember(member: Member): Long {
-        val id = memberDao.insertMember(member)
-        val saved = member.copy(id = id)
+        // Le code QR est toujours normalise AVANT d'atteindre la base : on ne stocke
+        // jamais le contenu brut d'une carte sportive ("JUDO CLUB SEDDOUK N: 355 ...").
+        val safeMember = member.withNormalizedQr()
+        // Garde-fou anti-doublon : l'index unique sur `qrCode` combine a
+        // OnConflictStrategy.REPLACE effacerait silencieusement la fiche existante.
+        // On refuse donc l'insertion si un AUTRE athlete possede deja ce code QR.
+        val normalizedQr = safeMember.qrCode.trim()
+        if (normalizedQr.isNotBlank()) {
+            memberDao.getMemberByQrCode(normalizedQr)?.let { existing ->
+                if (existing.id != safeMember.id) return existing.id
+            }
+        }
+        // Garde-fou central : jamais deux fiches pour le meme athlete, quel que soit
+        // le chemin d'ecriture (formulaire, carte scannee, restauration...).
+        com.example.util.MemberDuplicates.find(memberDao.getAllMembersDirect(), safeMember)?.let { existing ->
+            return existing.id
+        }
+        val id = memberDao.insertMember(safeMember)
+        val saved = safeMember.copy(id = id)
         syncService?.enqueueMember(saved, "UPSERT")
         return id
     }
 
     /**
-     * Builds and stores a new member from a scanned sports card (or any coded card
-     * carrying the athlete identity). Used to auto-register athletes whose card is
-     * scanned but who are not yet present in the database.
-     * Returns the created member, or null when the code carries no usable identity.
+     * Repare les fiches dont `qr_code` contient une charge utile brute de carte
+     * (anciennes versions de l'application). Retourne le nombre de fiches corrigees.
      */
-    suspend fun registerMemberFromCard(rawCode: String): Member? {
-        val cleanCode = rawCode.trim()
-        if (cleanCode.isBlank()) return null
-
-        val extracted = com.example.util.CardDataParser.parseCardData(cleanCode)
-        val firstName = extracted.firstName.trim()
-        val lastName = extracted.lastName.trim()
-        if (firstName.isBlank() || lastName.isBlank()) return null
-
-        // Prefer the card's own QR identifier so future identical scans resolve to
-        // this member; fall back to the raw scanned code.
-        val qr = extracted.qrCode.trim().ifBlank { cleanCode }
-        memberDao.getMemberByQrCode(qr)?.let { return it }
-        if (extracted.cardNumber.isNotBlank()) {
-            val cn = extracted.cardNumber.trim()
-            memberDao.getMemberByQrCode(cn)?.let { return it }
-            memberDao.getMemberByQrCode("JCS-$cn")?.let { return it }
-        }
-
-        val notes = buildString {
-            if (extracted.notes.isNotBlank()) append(extracted.notes.trim())
-            if (extracted.cardNumber.isNotBlank()) {
-                if (isNotEmpty()) append(" - ")
-                append("Licence ${extracted.cardNumber}")
+    suspend fun repairMalformedQrCodes(): Int {
+        var fixed = 0
+        memberDao.getAllMembersDirect().forEach { member ->
+            val clean = com.example.util.MemberQr.normalize(member.qrCode)
+            if (clean.isNotBlank() && clean != member.qrCode) {
+                val repaired = member.copy(qrCode = clean)
+                memberDao.updateMember(repaired)
+                syncService?.enqueueMember(repaired, "UPDATE")
+                fixed++
             }
         }
+        return fixed
+    }
 
-        val member = Member(
-            firstName = firstName,
-            lastName = lastName,
-            birthDate = extracted.birthDate.trim(),
-            phone = extracted.phone.trim(),
-            groupCode = extracted.group.code,
-            beltName = extracted.belt.name,
-            qrCode = qr,
-            registrationDate = getTodayDateString(),
-            photoUrl = extracted.photoUrl.trim(),
-            notes = notes
-        )
-        val id = insertMember(member)
-        return member.copy(id = id)
+    /** Applique la normalisation du code QR (prefixe JCS- + numero de carte). */
+    private fun Member.withNormalizedQr(): Member {
+        val clean = com.example.util.MemberQr.normalize(qrCode)
+        val finalCode = clean.ifBlank {
+            // Aucun identifiant exploitable : on genere un code lisible, jamais le texte brut.
+            "JCS-" + System.currentTimeMillis().toString().takeLast(4)
+        }
+        return if (finalCode == qrCode) this else copy(qrCode = finalCode)
     }
 
     suspend fun updateMember(member: Member) {
-        memberDao.updateMember(member)
-        syncService?.enqueueMember(member, "UPDATE")
+        val safeMember = member.withNormalizedQr()
+        memberDao.updateMember(safeMember)
+        syncService?.enqueueMember(safeMember, "UPDATE")
     }
 
     suspend fun deleteMember(member: Member) {
@@ -247,9 +306,7 @@ class JudoRepository(
             checkInMethod = "CALENDAR"
         )
         val id = attendanceDao.insertAttendance(att)
-        val finalAtt = att.copy(id = id)
-        syncService?.enqueueAttendance(finalAtt)
-        return finalAtt
+        return att.copy(id = id)
     }
 
     suspend fun deleteAttendanceForMemberAndDate(memberId: Long, dateString: String) {
@@ -259,244 +316,49 @@ class JudoRepository(
         }
     }
 
-    suspend fun seedInitialDataIfEmpty() {
-        if (memberDao.countMembers() > 0) return
+    /**
+     * Deletes history entries locally AND removes their footprint from the cloud:
+     * - the attendance rows recorded for the session's [PastSessionEntity.groupCode]
+     *   on [PastSessionEntity.dateString] are removed locally (the cloud no longer
+     *   stores attendances: they live in `past_sessions.present_members`),
+     * - each [PastSessionEntity.id] is deleted immediately from the cloud
+     *   `past_sessions` table, with a queued retry when offline,
+     * - finally the local rows disappear from Room.
+     */
+    suspend fun deletePastSessionsCascade(sessions: List<PastSessionEntity>) {
+        if (sessions.isEmpty()) return
 
-        val initialMembers = listOf(
-            Member(
-                id = 1L,
-                qrCode = "JS-2026-001",
-                firstName = "Aimed",
-                lastName = "Bensaci",
-                birthDate = "2012-04-12",
-                phone = "0555 12 34 56",
-                groupCode = "U15",
-                beltName = "VERTE",
-                status = "ACTIF",
-                registrationDate = "2024-09-01",
-                notes = "Assidu, très bon morote seoi-nage"
-            ),
-            Member(
-                id = 2L,
-                qrCode = "JS-2026-002",
-                firstName = "Mohamed",
-                lastName = "Haddad",
-                birthDate = "2011-08-25",
-                phone = "0661 78 90 12",
-                groupCode = "U15",
-                beltName = "BLEUE",
-                status = "ACTIF",
-                registrationDate = "2023-09-10",
-                notes = "Capitaine adjoint Minimes"
-            ),
-            Member(
-                id = 3L,
-                qrCode = "JS-2026-003",
-                firstName = "Yanis",
-                lastName = "Amroune",
-                birthDate = "2013-01-19",
-                phone = "0770 45 67 89",
-                groupCode = "U13",
-                beltName = "ORANGE",
-                status = "ACTIF",
-                registrationDate = "2025-01-15"
-            ),
-            Member(
-                id = 4L,
-                qrCode = "JS-2026-004",
-                firstName = "Massinissa",
-                lastName = "Said",
-                birthDate = "2010-11-03",
-                phone = "0550 99 88 77",
-                groupCode = "U18",
-                beltName = "MARRON",
-                status = "ACTIF",
-                registrationDate = "2022-09-01"
-            ),
-            Member(
-                id = 5L,
-                qrCode = "JS-2026-005",
-                firstName = "Lina",
-                lastName = "Kaci",
-                birthDate = "2014-06-30",
-                phone = "0666 33 22 11",
-                groupCode = "U13",
-                beltName = "JAUNE_ORANGE",
-                status = "ACTIF",
-                registrationDate = "2025-09-01"
-            ),
-            Member(
-                id = 6L,
-                qrCode = "JS-2026-006",
-                firstName = "Sofiane",
-                lastName = "Meziani",
-                birthDate = "2015-09-14",
-                phone = "0772 11 44 55",
-                groupCode = "U11",
-                beltName = "JAUNE",
-                status = "ACTIF",
-                registrationDate = "2025-10-01"
-            ),
-            Member(
-                id = 7L,
-                qrCode = "JS-2026-007",
-                firstName = "Rayan",
-                lastName = "Benali",
-                birthDate = "2016-03-22",
-                phone = "0558 77 66 55",
-                groupCode = "U11",
-                beltName = "BLANCHE_JAUNE",
-                status = "ACTIF",
-                registrationDate = "2026-01-10"
-            ),
-            Member(
-                id = 8L,
-                qrCode = "JS-2026-008",
-                firstName = "Ines",
-                lastName = "Brahimi",
-                birthDate = "2012-07-08",
-                phone = "0664 22 88 99",
-                groupCode = "U15",
-                beltName = "VERTE",
-                status = "ACTIF",
-                registrationDate = "2024-10-05"
-            ),
-            Member(
-                id = 9L,
-                qrCode = "JS-2026-009",
-                firstName = "Amine",
-                lastName = "Cherif",
-                birthDate = "2008-02-17",
-                phone = "0775 88 11 22",
-                groupCode = "SENIOR",
-                beltName = "NOIRE",
-                status = "ACTIF",
-                registrationDate = "2020-09-01",
-                notes = "Entraîneur bénévole & compétiteur"
-            ),
-            Member(
-                id = 10L,
-                qrCode = "JS-2026-0010",
-                firstName = "Celia",
-                lastName = "Hamadi",
-                birthDate = "2017-12-05",
-                phone = "0553 44 77 11",
-                groupCode = "U9",
-                beltName = "BLANCHE",
-                status = "ACTIF",
-                registrationDate = "2026-09-01"
-            ),
-            Member(
-                id = 11L,
-                qrCode = "JS-2026-0011",
-                firstName = "Bilal",
-                lastName = "Tigrine",
-                birthDate = "2011-05-18",
-                phone = "0661 44 33 22",
-                groupCode = "U15",
-                beltName = "BLEUE",
-                status = "ACTIF",
-                registrationDate = "2023-09-01"
-            ),
-            Member(
-                id = 12L,
-                qrCode = "JS-2026-0012",
-                firstName = "Kenzi",
-                lastName = "Ait Ouali",
-                birthDate = "2018-04-10",
-                phone = "0771 99 00 22",
-                groupCode = "EVEIL",
-                beltName = "BLANCHE",
-                status = "ACTIF",
-                registrationDate = "2026-09-15"
-            )
-        )
-        val insertedIds = memberDao.insertMembers(initialMembers)
-        val currentMembers = memberDao.getAllMembersDirect()
-        val availableIds = if (currentMembers.isNotEmpty()) {
-            currentMembers.map { it.id }
-        } else if (insertedIds.isNotEmpty()) {
-            insertedIds
-        } else {
-            emptyList()
-        }
-
-        if (availableIds.isNotEmpty() && attendanceDao.countTotalAttendance() < 10) {
-            fun getSafeMemberId(seedIndex: Long): Long {
-                val idx = (seedIndex - 1).toInt()
-                return if (idx in availableIds.indices) availableIds[idx] else availableIds.first()
-            }
-
-            val now = System.currentTimeMillis()
-            val dayMs = 24L * 3600 * 1000L
-            val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
-            val today = sdf.format(Date(now))
-
-            val historicalList = mutableListOf<Attendance>()
-
-            // Today's attendances (up to 5 present today)
-            val todayCount = minOf(5, availableIds.size)
-            for (i in 0 until todayCount) {
-                historicalList.add(
-                    Attendance(
-                        memberId = availableIds[i],
-                        dateString = today,
-                        timeString = String.format(Locale.getDefault(), "18:%02d", 1 + i * 2),
-                        timestamp = now - (3600_000L - i * 200_000L),
-                        checkInMethod = "QR_SCAN"
-                    )
+        // 1. Collect the attendance ids that belong to these sessions BEFORE any
+        //    deletion, so a cloud DELETE can be queued per id.
+        val attendanceIds = mutableSetOf<Long>()
+        for (session in sessions) {
+            attendanceDao
+                .getAttendanceIdsForGroupAndDate(
+                    com.example.util.GroupCodes.split(session.groupCode),
+                    session.dateString
                 )
-            }
+                .forEach { attendanceIds.add(it) }
+        }
 
-            // Days offsets for training days across past 2 months
-            val pastDaysOffsets = listOf(
-                1L to listOf(1L, 2L, 4L, 6L, 7L, 8L), // Hier
-                2L to listOf(2L, 3L, 5L, 6L, 9L),     // Il y a 2 jours
-                4L to listOf(1L, 3L, 4L, 7L, 8L, 9L), // Il y a 4 jours (cette semaine)
-                6L to listOf(1L, 2L, 5L, 6L, 10L),    // Il y a 6 jours (cette semaine)
-                9L to listOf(2L, 3L, 4L, 7L, 8L, 11L),// Il y a 9 jours
-                12L to listOf(1L, 2L, 4L, 5L, 6L, 9L),// Il y a 12 jours
-                16L to listOf(1L, 3L, 4L, 7L, 8L),    // Il y a 16 jours
-                20L to listOf(2L, 4L, 5L, 6L, 9L, 10L),// Il y a 20 jours (ce mois)
-                24L to listOf(1L, 2L, 3L, 6L, 7L, 8L),// Il y a 24 jours (ce mois)
-                28L to listOf(1L, 4L, 5L, 8L, 9L),    // Il y a 28 jours (ce mois)
-                35L to listOf(2L, 3L, 4L, 6L, 7L, 11L),// Il y a 35 jours (mois dernier)
-                42L to listOf(1L, 2L, 5L, 8L, 9L),    // Il y a 42 jours
-                49L to listOf(1L, 3L, 4L, 6L, 7L, 10L),// Il y a 49 jours
-                56L to listOf(2L, 4L, 5L, 8L, 9L, 11L) // Il y a 56 jours (2 mois)
-            )
-
-            for ((daysAgo, membersAttended) in pastDaysOffsets) {
-                val pastTime = now - (daysAgo * dayMs)
-                val dateStr = sdf.format(Date(pastTime))
-                for (seedIndex in membersAttended) {
-                    val safeId = getSafeMemberId(seedIndex)
-                    val hour = 17 + (safeId.toInt() % 3)
-                    val minute = (safeId.toInt() * 7) % 60
-                    val timeStr = String.format(Locale.getDefault(), "%02d:%02d", hour, minute)
-                    historicalList.add(
-                        Attendance(
-                            memberId = safeId,
-                            dateString = dateStr,
-                            timeString = timeStr,
-                            timestamp = pastTime - (hour * 3600_000L),
-                            checkInMethod = "QR_SCAN"
-                        )
-                    )
-                }
-            }
-
-            try {
-                attendanceDao.insertAll(historicalList)
-            } catch (e: Exception) {
-                android.util.Log.e("JudoRepository", "Failed to batch insert historical attendances: ${e.message}", e)
-                for (att in historicalList) {
-                    try {
-                        attendanceDao.insertAttendance(att)
-                    } catch (_: Exception) {}
+        syncService?.let { svc ->
+            // La table cloud `attendances` n'existe plus : les presences officielles
+            // vivent dans `past_sessions`. Inutile de mettre des DELETE en file pour elle.
+            for (session in sessions) {
+                // Suppression immediate cote cloud : l'historique doit disparaitre de
+                // Supabase tout de suite, pas au prochain cycle de synchronisation.
+                val deleted = svc.deleteRemoteNow("PAST_SESSIONS", session.id)
+                if (!deleted) {
+                    // Hors-ligne / erreur reseau : on garde un reessai automatique.
+                    svc.enqueueDelete("PAST_SESSIONS", session.id)
                 }
             }
         }
+
+        // 2. Local wipe: the attendances die with their session, then the rows.
+        if (attendanceIds.isNotEmpty()) {
+            attendanceDao.deleteAttendancesByIds(attendanceIds.toList())
+        }
+        clubDao?.deletePastSessionsByIds(sessions.map { it.id })
     }
 
     suspend fun clearEntireDatabase() {

@@ -56,10 +56,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AttendanceWithMember
+import com.example.data.model.Belt
+import com.example.data.model.CoachUser
 import com.example.data.model.JudoCategory
 import com.example.data.model.Member
 import com.example.data.model.PastTrainingSession
@@ -414,7 +417,7 @@ fun CoachHistoryScreen(
     var showAbsentSmsDialog by remember { mutableStateOf(false) }
 
     val categorySessions = remember(pastSessions, category) {
-        pastSessions.filter { it.categoryId.equals(category.id, ignoreCase = true) || it.groupCode.equals(category.groupCode, ignoreCase = true) }
+        pastSessions.filter { it.categoryId.equals(category.id, ignoreCase = true) || category.covers(it.groupCode) }
     }
 
     Column(
@@ -466,8 +469,8 @@ fun CoachHistoryScreen(
                 }
             } else {
                 items(categorySessions, key = { it.id }) { session ->
-                    val total = session.presentCount + session.absentCount
-                    val rate = if (total > 0) ((session.presentCount.toDouble() / total.toDouble()) * 100).toInt() else 0
+                    val total = session.effectivePresentCount + session.effectiveAbsentCount
+                    val rate = if (total > 0) ((session.effectivePresentCount.toDouble() / total.toDouble()) * 100).toInt() else 0
 
                     val coachesPresent = buildList {
                         if (session.coach1Present) add(session.coach1Name)
@@ -549,7 +552,7 @@ fun CoachHistoryScreen(
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = "${session.presentCount}",
+                                            text = "${session.effectivePresentCount}",
                                             fontWeight = FontWeight.Black,
                                             color = JudoSuccess,
                                             fontSize = 16.sp
@@ -572,7 +575,7 @@ fun CoachHistoryScreen(
                                         horizontalAlignment = Alignment.CenterHorizontally
                                     ) {
                                         Text(
-                                            text = "${session.absentCount}",
+                                            text = "${session.effectiveAbsentCount}",
                                             fontWeight = FontWeight.Black,
                                             color = MaterialTheme.colorScheme.error,
                                             fontSize = 16.sp
@@ -628,6 +631,7 @@ fun CoachHistoryScreen(
             AbsentSmsDialog(
                 absentMembers = absentMemberObjects,
                 sessionDate = session.dateString,
+                sessionStartTime = session.startTime,
                 clubName = clubName,
                 onDismiss = { showAbsentSmsDialog = false }
             )
@@ -724,6 +728,7 @@ fun CoachProfileScreen(
     isDarkTheme: Boolean,
     onToggleTheme: () -> Unit,
     onChangeCategory: () -> Unit,
+    coaches: List<CoachUser> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     Column(
@@ -757,34 +762,42 @@ fun CoachProfileScreen(
                         .fillMaxWidth()
                         .padding(20.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(72.dp)
-                            .clip(CircleShape)
-                            .background(JudoRed),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = "🥋",
-                            fontSize = 34.sp
-                        )
+                    // Les 2 coachs de la catégorie : photos côte à côte (horizontalement).
+                    // La photo locale vient de l'espace admin > onglet Coachs.
+                    val coach1 = coaches.firstOrNull {
+                        com.example.util.CoachNameKey.same(it.name, category.coach1Name)
+                    }
+                    val coach2 = coaches.firstOrNull {
+                        com.example.util.CoachNameKey.same(it.name, category.coach2Name)
                     }
 
-                    Text(
-                        text = category.coach1Name,
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontWeight = FontWeight.Black
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        CoachPhotoBlock(
+                            name = category.coach1Name,
+                            role = "Coach principal",
+                            coach = coach1,
+                            modifier = Modifier.weight(1f)
                         )
-                    )
+                        CoachPhotoBlock(
+                            name = category.coach2Name,
+                            role = "Co-entraîneur",
+                            coach = coach2,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
 
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = JudoRed.copy(alpha = 0.12f)
                     ) {
                         Text(
-                            text = "Coach Principal • ${category.name}",
+                            text = category.name,
                             style = MaterialTheme.typography.labelMedium.copy(
                                 color = JudoRed,
                                 fontWeight = FontWeight.Bold
@@ -792,13 +805,6 @@ fun CoachProfileScreen(
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
                         )
                     }
-
-                    Text(
-                        text = "Co-entraîneur : ${category.coach2Name}",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
                 }
             }
 
@@ -897,6 +903,61 @@ fun CoachProfileScreen(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.error
                 )
+            )
+        }
+    }
+}
+
+/**
+ * Bloc d'un coach (photo + nom + rôle) affiché côte à côte avec l'autre coach de la catégorie.
+ * [coach] est résolu par le nom : c'est lui qui porte la photo locale (`photoPath`).
+ */
+@Composable
+private fun CoachPhotoBlock(
+    name: String,
+    role: String,
+    coach: CoachUser?,
+    modifier: Modifier = Modifier
+) {
+    val grade = coach?.grade.orEmpty()
+
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        JudokaAvatar(
+            name = name.ifBlank { "Coach" },
+            belt = Belt.fromString(grade),
+            photoUrl = coach?.photoPath.orEmpty(),
+            sizeDp = 84,
+            borderColor = JudoRed
+        )
+        Text(
+            text = name.ifBlank { "Non assigné" },
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Black),
+            textAlign = TextAlign.Center
+        )
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = JudoRed.copy(alpha = 0.12f)
+        ) {
+            Text(
+                text = role,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = JudoRed,
+                    fontWeight = FontWeight.Bold
+                ),
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+            )
+        }
+        if (grade.isNotBlank()) {
+            Text(
+                text = grade,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                ),
+                textAlign = TextAlign.Center
             )
         }
     }

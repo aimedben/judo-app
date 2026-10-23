@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
@@ -60,6 +61,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -93,6 +95,8 @@ fun AdminSettingsScreen(
     var phone by remember { mutableStateOf(clubSettings.phone) }
     var season by remember { mutableStateOf(clubSettings.season) }
     var openingHours by remember { mutableStateOf(clubSettings.openingHours) }
+    var officialStartDate by remember { mutableStateOf(clubSettings.officialStartDate) }
+    var smsSenderNumber by remember { mutableStateOf(clubSettings.smsSenderNumber) }
     var isClubSaved by remember { mutableStateOf(false) }
 
     // Admin account state
@@ -278,6 +282,46 @@ fun AdminSettingsScreen(
                         )
                     }
 
+                    // Debut du pointage officiel : les seances anterieures a cette date sont
+                    // ignorees dans les statistiques (aucune donnee n'est supprimee).
+                    OutlinedTextField(
+                        value = officialStartDate,
+                        onValueChange = { officialStartDate = it; isClubSaved = false },
+                        label = { Text("Début du pointage officiel (AAAA-MM-JJ)") },
+                        placeholder = { Text("2026-10-20") },
+                        singleLine = true,
+                        supportingText = {
+                            Text("Les séances antérieures à cette date ne comptent plus dans les présences, absences et taux. Laisser vide = aucune restriction.")
+                        },
+                        trailingIcon = {
+                            androidx.compose.material3.TextButton(
+                                onClick = {
+                                    officialStartDate = com.example.util.OfficialPeriod.todayIsoDate()
+                                    isClubSaved = false
+                                }
+                            ) {
+                                Text("Aujourd'hui")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
+                    // Numero expediteur des SMS : ajoute comme contact dans le message envoye
+                    // aux parents des absents. Les numeros des parents, eux, sont repris
+                    // automatiquement depuis les fiches athletes.
+                    OutlinedTextField(
+                        value = smsSenderNumber,
+                        onValueChange = { smsSenderNumber = it; isClubSaved = false },
+                        label = { Text("Numéro expéditeur des SMS") },
+                        placeholder = { Text("0782487120") },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                        singleLine = true,
+                        supportingText = {
+                            Text("Utilisé comme contact du club dans les SMS aux parents d'absents.")
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -300,13 +344,37 @@ fun AdminSettingsScreen(
 
                         Button(
                             onClick = {
+                                val normalizedStart = officialStartDate.trim()
+                                if (normalizedStart.isNotEmpty() &&
+                                    !Regex("^\\d{4}-\\d{2}-\\d{2}$").matches(normalizedStart)
+                                ) {
+                                    Toast.makeText(
+                                        context,
+                                        "Date invalide : utilisez le format AAAA-MM-JJ",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@Button
+                                }
+                                val normalizedSms = smsSenderNumber.trim()
+                                if (normalizedSms.isNotEmpty() &&
+                                    normalizedSms.count { it.isDigit() } < 6
+                                ) {
+                                    Toast.makeText(
+                                        context,
+                                        "Numéro SMS invalide",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@Button
+                                }
                                 onUpdateClubSettings(
                                     clubSettings.copy(
                                         clubName = clubName.trim(),
                                         dojoAddress = dojoAddress.trim(),
                                         phone = phone.trim(),
                                         season = season.trim(),
-                                        openingHours = openingHours.trim()
+                                        openingHours = openingHours.trim(),
+                                        officialStartDate = normalizedStart,
+                                        smsSenderNumber = normalizedSms
                                     )
                                 )
                                 isClubSaved = true

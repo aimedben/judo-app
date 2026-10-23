@@ -32,6 +32,9 @@ interface ClubDao {
     @Delete
     suspend fun deleteCategory(category: CategoryEntity)
 
+    @Query("DELETE FROM categories WHERE id = :id")
+    suspend fun deleteCategoryById(id: String)
+
     // Coaches
     @Query("SELECT * FROM coaches ORDER BY name ASC")
     fun getAllCoachesFlow(): Flow<List<CoachEntity>>
@@ -94,6 +97,9 @@ interface ClubDao {
 
     @Query("DELETE FROM past_sessions WHERE id = :id")
     suspend fun deletePastSessionById(id: String)
+
+    @Query("DELETE FROM past_sessions WHERE id IN (:ids)")
+    suspend fun deletePastSessionsByIds(ids: List<String>)
 
     @Query("DELETE FROM categories")
     suspend fun deleteAllCategories()

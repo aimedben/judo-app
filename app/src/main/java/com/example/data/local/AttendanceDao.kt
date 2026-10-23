@@ -81,6 +81,24 @@ interface AttendanceDao {
     @Query("SELECT * FROM attendance ORDER BY timestamp DESC")
     suspend fun getAllAttendancesDirect(): List<Attendance>
 
+    /**
+     * Ids of every attendance recorded on [dateString] for members whose group
+     * matches one of [groupCodes]: the exact footprint of a finished session, used
+     * when deleting entries from the history (attendances die with their session).
+     * A list is needed because a category can cover several groups ("U18,SENIOR").
+     */
+    @Query(
+        """
+        SELECT attendance.id FROM attendance
+        INNER JOIN members ON attendance.memberId = members.id
+        WHERE attendance.dateString = :dateString AND members.groupCode IN (:groupCodes)
+        """
+    )
+    suspend fun getAttendanceIdsForGroupAndDate(groupCodes: List<String>, dateString: String): List<Long>
+
+    @Query("DELETE FROM attendance WHERE id IN (:ids)")
+    suspend fun deleteAttendancesByIds(ids: List<Long>)
+
     @Query("DELETE FROM attendance")
     suspend fun deleteAllAttendance()
 }

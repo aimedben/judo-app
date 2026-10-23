@@ -19,11 +19,18 @@ data class ClubSettings(
     val phone: String = "07 82 48 71 20",
     val season: String = "2024 - 2025",
     val openingHours: String = "Samedi - Jeudi : 09h00 - 21h00",
-    val federationAffiliation: String = "Fédération de Judo"
+    val federationAffiliation: String = "Fédération de Judo",
+    /**
+     * Debut du pointage officiel (ISO yyyy-MM-dd, vide = pas de restriction).
+     * Les seances anterieures sont ignorees dans les statistiques.
+     */
+    val officialStartDate: String = "",
+    /** Numero du club utilise comme expediteur/contact dans les SMS aux parents. */
+    val smsSenderNumber: String = ""
 )
 
 data class AdminProfile(
-    val name: String = "Sensei Ahmed BOURENANE",
+    val name: String = "",
     val phone: String = "07 82 48 71 20",
     val email: String = "contact@judoclubseddouk.dz",
     val role: String = "Directeur Technique & Administrateur",

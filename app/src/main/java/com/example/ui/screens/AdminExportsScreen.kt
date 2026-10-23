@@ -69,7 +69,7 @@ fun AdminExportsScreen(
 
     val filteredMembers = remember(allMembers, selectedCategoryFilter) {
         if (selectedCategoryFilter == "ALL") allMembers
-        else allMembers.filter { it.groupCode.equals(selectedCategoryFilter, ignoreCase = true) }
+        else allMembers.filter { com.example.util.GroupCodes.matches(selectedCategoryFilter, it.groupCode) }
     }
 
     val filteredAttendances = remember(selectedPeriodFilter, selectedCategoryFilter, allAttendance, todayAttendance) {
@@ -91,7 +91,7 @@ fun AdminExportsScreen(
         }
 
         if (selectedCategoryFilter == "ALL") baseList
-        else baseList.filter { it.groupCode.equals(selectedCategoryFilter, ignoreCase = true) }
+        else baseList.filter { com.example.util.GroupCodes.matches(selectedCategoryFilter, it.groupCode) }
     }
 
     LazyColumn(

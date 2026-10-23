@@ -5,6 +5,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -60,6 +62,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Divider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -95,6 +99,7 @@ import com.example.data.model.NotificationType
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.CategoryYears
 import com.example.util.PhotoCompressor
 import kotlinx.coroutines.launch
 
@@ -790,7 +795,7 @@ fun AddEditCoachDialog(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text(
-                                    text = "${cat.name} (${cat.groupCode})",
+                                    text = cat.name,
                                     style = MaterialTheme.typography.bodyMedium.copy(
                                         fontWeight = if (isAssigned) FontWeight.Bold else FontWeight.Normal,
                                         color = if (isAssigned) JudoRed else MaterialTheme.colorScheme.onSurface
@@ -877,6 +882,7 @@ fun AddEditCoachDialog(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AddEditCategoryDialog(
     initialCategory: JudoCategory?,
@@ -886,10 +892,27 @@ fun AddEditCategoryDialog(
 ) {
     var name by remember { mutableStateOf(initialCategory?.name ?: "") }
     var groupCode by remember { mutableStateOf(initialCategory?.groupCode ?: "U13") }
-    var coach1Name by remember { mutableStateOf(initialCategory?.coach1Name ?: (coachesList.firstOrNull()?.name ?: "Sensei Ahmed")) }
-    var coach2Name by remember { mutableStateOf(initialCategory?.coach2Name ?: (coachesList.getOrNull(1)?.name ?: "Coach Yacine")) }
-    var description by remember { mutableStateOf(initialCategory?.description ?: "") }
+    // Aucun nom en dur : les coachs proposes viennent de la base locale (table coaches).
+    var coach1Name by remember { mutableStateOf(initialCategory?.coach1Name ?: (coachesList.firstOrNull()?.name ?: "")) }
+    var coach2Name by remember { mutableStateOf(initialCategory?.coach2Name ?: (coachesList.getOrNull(1)?.name ?: "")) }
+    val initialDescription = initialCategory?.description.orEmpty()
+    val defaultYears = remember(initialCategory?.id) {
+        CategoryYears.defaultsFor(initialCategory?.groupCode ?: "U13")
+    }
+    // Annees de naissance (remplace l'ancienne "tranche d'age" libre).
+    var selectedYears by remember {
+        mutableStateOf(
+            CategoryYears.parse(initialDescription).ifEmpty { defaultYears.first }
+        )
+    }
+    var upToAndBefore by remember {
+        mutableStateOf(
+            if (initialDescription.isBlank()) defaultYears.second
+            else CategoryYears.isUpToAndBefore(initialDescription)
+        )
+    }
     var isActive by remember { mutableStateOf(initialCategory?.isActive ?: true) }
+    val yearsPreview = CategoryYears.format(selectedYears, upToAndBefore)
 
     Dialog(onDismissRequest = onDismiss) {
         Card(
@@ -938,13 +961,74 @@ fun AddEditCategoryDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Tranche d'âge / Description (ex: 10-11 ans)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                Text(
+                    text = "Années de naissance",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                 )
+                Text(
+                    text = "Sélectionnez la ou les années des judokas de cette catégorie.",
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                )
+
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    CategoryYears.selectableYears.forEach { year ->
+                        val selected = year in selectedYears
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                selectedYears = if (selected) selectedYears - year else selectedYears + year
+                            },
+                            label = {
+                                Text(
+                                    text = year.toString(),
+                                    style = MaterialTheme.typography.labelMedium.copy(fontSize = 12.sp)
+                                )
+                            },
+                            modifier = Modifier.testTag("category_year_$year")
+                        )
+                    }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(
+                        checked = upToAndBefore,
+                        onCheckedChange = { upToAndBefore = it },
+                        modifier = Modifier.testTag("category_years_up_to")
+                    )
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Année et moins",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium)
+                        )
+                        Text(
+                            text = "Toutes les années jusqu'à la plus ancienne sélectionnée.",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = JudoRed.copy(alpha = 0.08f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        text = "Années retenues : ${yearsPreview.ifBlank { "aucune" }}",
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                        style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
 
                 OutlinedTextField(
                     value = coach1Name,
@@ -996,7 +1080,7 @@ fun AddEditCategoryDialog(
                                         groupCode = groupCode.trim(),
                                         coach1Name = coach1Name.trim(),
                                         coach2Name = coach2Name.trim(),
-                                        description = description.trim(),
+                                        description = yearsPreview,
                                         isActive = isActive
                                     )
                                 )
@@ -1012,3 +1096,4 @@ fun AddEditCategoryDialog(
         }
     }
 }
+

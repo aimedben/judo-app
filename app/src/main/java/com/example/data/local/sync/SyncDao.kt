@@ -22,6 +22,12 @@ interface SyncQueueDao {
     @Query("SELECT COUNT(*) FROM sync_queue WHERE status = 'PENDING'")
     suspend fun countPendingOperationsDirect(): Int
 
+    @Query("SELECT COUNT(*) FROM sync_queue WHERE status = 'PENDING' AND entityType = :entityType AND entityId = :entityId")
+    suspend fun countPendingForEntity(entityType: String, entityId: String): Int
+
+    @Query("SELECT COUNT(*) FROM sync_queue WHERE status = 'PENDING' AND entityType = :entityType")
+    suspend fun countPendingForType(entityType: String): Int
+
     @Query("SELECT * FROM sync_queue ORDER BY createdAt DESC LIMIT :limit")
     fun getRecentQueue(limit: Int = 50): Flow<List<SyncQueueEntity>>
 
@@ -42,6 +48,10 @@ interface SyncQueueDao {
 
     @Query("DELETE FROM sync_queue WHERE status = 'SYNCED'")
     suspend fun cleanSyncedOperations()
+
+    /** Annule les UPSERT en attente d'une entite supprimee (evite qu'ils la ressuscitent). */
+    @Query("DELETE FROM sync_queue WHERE entityType = :entityType AND entityId = :entityId AND operation = 'UPSERT'")
+    suspend fun deletePendingUpserts(entityType: String, entityId: String)
 
     @Delete
     suspend fun delete(operation: SyncQueueEntity)

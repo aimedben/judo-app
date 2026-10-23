@@ -16,25 +16,32 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowForwardIos
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CenterFocusWeak
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.automirrored.filled.Message
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SportsMartialArts
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -54,6 +61,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,9 +69,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -72,10 +83,13 @@ import com.example.data.model.JudoCategory
 import com.example.data.model.Member
 import com.example.data.model.PastTrainingSession
 import com.example.ui.components.AbsentSmsDialog
+import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.util.AbsentSmsNotifier
+import com.example.util.MemberQr
+import kotlinx.coroutines.delay
 
 import com.example.data.model.CoachUser
 import com.example.data.model.RecurrenceScope
@@ -98,6 +112,7 @@ fun AdminSessionsScreen(
     onDeleteScheduledSession: (String, RecurrenceScope) -> Unit = { _, _ -> },
     onCheckConflicts: (ScheduledTrainingSession, String?) -> List<SessionConflict> = { _, _ -> emptyList() },
     onCorrectAttendance: (String, String, Boolean) -> Unit,
+    onDeletePastSessions: (List<String>) -> Unit = {},
     initialTab: Int = 0,
     modifier: Modifier = Modifier
 ) {
@@ -105,6 +120,9 @@ fun AdminSessionsScreen(
     var selectedCategoryFilter by remember { mutableStateOf("ALL") }
     var selectedSessionDetail by remember { mutableStateOf<PastTrainingSession?>(null) }
     var sessionToCorrect by remember { mutableStateOf<PastTrainingSession?>(null) }
+    var deleteSelectionMode by remember { mutableStateOf(false) }
+    var selectedForDeletion by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmMultiDelete by remember { mutableStateOf(false) }
 
     var isCreateEditDialogOpen by remember { mutableStateOf(false) }
     var sessionToEdit by remember { mutableStateOf<ScheduledTrainingSession?>(null) }
@@ -234,6 +252,44 @@ fun AdminSessionsScreen(
             }
         }
 
+        // Selection mode toggle for the history (multi-delete)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (deleteSelectionMode && selectedForDeletion.isNotEmpty()) {
+                Button(
+                    onClick = { confirmMultiDelete = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("delete_selected_sessions_button")
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Supprimer (${selectedForDeletion.size})")
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+            }
+            TextButton(
+                onClick = {
+                    deleteSelectionMode = !deleteSelectionMode
+                    if (!deleteSelectionMode) selectedForDeletion = emptySet()
+                }
+            ) {
+                Icon(
+                    imageVector = if (deleteSelectionMode) Icons.Default.Close else Icons.Default.Delete,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text(
+                    if (deleteSelectionMode) "Annuler la sélection" else "Supprimer des séances",
+                    fontSize = 12.sp
+                )
+            }
+        }
+
         // Category Filter Chips
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -286,16 +342,30 @@ fun AdminSessionsScreen(
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
                 items(filteredSessions) { session ->
-                    val total = session.presentCount + session.absentCount
-                    val rate = if (total > 0) ((session.presentCount.toDouble() / total) * 100).toInt() else 0
+                    val total = session.effectivePresentCount + session.effectiveAbsentCount
+                    val rate = if (total > 0) ((session.effectivePresentCount.toDouble() / total) * 100).toInt() else 0
 
                     Card(
                         shape = RoundedCornerShape(16.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = CardDefaults.outlinedCardBorder(),
+                        border = if (deleteSelectionMode && session.id in selectedForDeletion) {
+                            BorderStroke(2.dp, JudoRed)
+                        } else {
+                            CardDefaults.outlinedCardBorder()
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .clickable { selectedSessionDetail = session }
+                            .clickable {
+                                if (deleteSelectionMode) {
+                                    selectedForDeletion = if (session.id in selectedForDeletion) {
+                                        selectedForDeletion - session.id
+                                    } else {
+                                        selectedForDeletion + session.id
+                                    }
+                                } else {
+                                    selectedSessionDetail = session
+                                }
+                            }
                     ) {
                         Column(
                             modifier = Modifier
@@ -312,19 +382,39 @@ fun AdminSessionsScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(42.dp)
-                                            .clip(CircleShape)
-                                            .background(JudoRed.copy(alpha = 0.12f)),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.EventNote,
-                                            contentDescription = null,
-                                            tint = JudoRed,
-                                            modifier = Modifier.size(22.dp)
-                                        )
+                                    if (deleteSelectionMode) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(42.dp)
+                                                .clip(CircleShape)
+                                                .background(
+                                                    if (session.id in selectedForDeletion) JudoRed
+                                                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                                ),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.CheckCircle,
+                                                contentDescription = if (session.id in selectedForDeletion) "Sélectionnée" else "Non sélectionnée",
+                                                tint = if (session.id in selectedForDeletion) Color.White else Color.Transparent,
+                                                modifier = Modifier.size(26.dp)
+                                            )
+                                        }
+                                    } else {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(42.dp)
+                                                .clip(CircleShape)
+                                                .background(JudoRed.copy(alpha = 0.12f)),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.EventNote,
+                                                contentDescription = null,
+                                                tint = JudoRed,
+                                                modifier = Modifier.size(22.dp)
+                                            )
+                                        }
                                     }
 
                                     Column {
@@ -380,7 +470,10 @@ fun AdminSessionsScreen(
                                 ) {
                                     Icon(Icons.Default.SportsMartialArts, contentDescription = null, modifier = Modifier.size(14.dp), tint = JudoGold)
                                     Text(
-                                        text = "Coach : ${session.coach1Name}",
+                                        text = "Coach : " + listOfNotNull(
+                                            session.coach1Name.takeIf { it.isNotBlank() },
+                                            session.coach2Name.takeIf { it.isNotBlank() }
+                                        ).joinToString(" • "),
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = JudoGold,
                                             fontWeight = FontWeight.Medium
@@ -396,11 +489,11 @@ fun AdminSessionsScreen(
                             ) {
                                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                     Text(
-                                        text = "🟢 ${session.presentCount} Présents",
+                                        text = "🟢 ${session.effectivePresentCount} Présents",
                                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
                                     )
                                     Text(
-                                        text = "🔴 ${session.absentCount} Absents",
+                                        text = "🔴 ${session.effectiveAbsentCount} Absents",
                                         style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
                                     )
                                 }
@@ -451,6 +544,7 @@ fun AdminSessionsScreen(
                 AbsentSmsDialog(
                     absentMembers = absentMemberObjects,
                     sessionDate = session.dateString,
+                    sessionStartTime = session.startTime,
                     clubName = clubName,
                     onDismiss = { showAbsentSmsDialog = false }
                 )
@@ -500,7 +594,7 @@ fun AdminSessionsScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = "${session.presentCount}", fontWeight = FontWeight.Bold, color = JudoSuccess, fontSize = 18.sp)
+                                Text(text = "${session.effectivePresentCount}", fontWeight = FontWeight.Bold, color = JudoSuccess, fontSize = 18.sp)
                                 Text(text = "Présents", style = MaterialTheme.typography.labelSmall)
                             }
                         }
@@ -510,7 +604,7 @@ fun AdminSessionsScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = "${session.absentCount}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 18.sp)
+                                Text(text = "${session.effectiveAbsentCount}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 18.sp)
                                 Text(text = "Absents", style = MaterialTheme.typography.labelSmall)
                             }
                         }
@@ -520,7 +614,7 @@ fun AdminSessionsScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = "${session.presentCount + session.absentCount}", fontWeight = FontWeight.Bold, color = JudoGold, fontSize = 18.sp)
+                                Text(text = "${session.effectivePresentCount + session.effectiveAbsentCount}", fontWeight = FontWeight.Bold, color = JudoGold, fontSize = 18.sp)
                                 Text(text = "Total inscrits", style = MaterialTheme.typography.labelSmall)
                             }
                         }
@@ -618,122 +712,359 @@ fun AdminSessionsScreen(
         }
     }
 
-    // Exceptional Correction Dialog
+    // Correction Dialog: douchette scan or manual selection, like the check-in space.
     if (sessionToCorrect != null) {
         val session = sessionToCorrect!!
-        var memberNameInput by remember { mutableStateOf("") }
-        var markAsPresent by remember { mutableStateOf(true) }
-        var showConfirmAlert by remember { mutableStateOf(false) }
 
-        Dialog(onDismissRequest = { sessionToCorrect = null }) {
-            Card(
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = CardDefaults.outlinedCardBorder(),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 16.dp)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Text(
-                        text = "Correction administrative",
-                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "Corriger manuellement la présence d'un athlète pour la séance ${session.categoryName} du ${session.dateString}. Cette action est tracée dans le journal d'audit.",
-                        style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    )
+        val sessionRoster = remember(members, session.id, session.groupCode) {
+            AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
+        }
+        // Local live mirror of the stored present list; every change is persisted through
+        // onCorrectAttendance, which updates the recorded session and pushes it to the cloud.
+        var presentNames by remember(session.id) {
+            mutableStateOf(session.presentMemberNames.toSet())
+        }
+        var searchQuery by remember { mutableStateOf("") }
+        var scanBuffer by remember { mutableStateOf("") }
+        var scanFeedback by remember { mutableStateOf<String?>(null) }
+        var scanFeedbackError by remember { mutableStateOf(false) }
+        val scanFocusRequester = remember { FocusRequester() }
 
-                    OutlinedTextField(
-                        value = memberNameInput,
-                        onValueChange = { memberNameInput = it },
-                        label = { Text("Nom et prénom de l'athlète") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
+        fun isPresent(member: Member): Boolean =
+            presentNames.any { it.trim().equals(member.fullName.trim(), ignoreCase = true) }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        FilterChip(
-                            selected = markAsPresent,
-                            onClick = { markAsPresent = true },
-                            label = { Text("Marquer Présent") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = JudoSuccess,
-                                selectedLabelColor = Color.White
-                            )
-                        )
-                        FilterChip(
-                            selected = !markAsPresent,
-                            onClick = { markAsPresent = false },
-                            label = { Text("Marquer Absent") },
-                            colors = FilterChipDefaults.filterChipColors(
-                                selectedContainerColor = MaterialTheme.colorScheme.error,
-                                selectedLabelColor = Color.White
-                            )
-                        )
-                    }
+        fun presentCountAll(): Int = presentNames.size
+        fun absentCountAll(): Int =
+            (maxOf(sessionRoster.size, presentNames.size) - presentCountAll()).coerceAtLeast(0)
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End
-                    ) {
-                        OutlinedButton(onClick = { sessionToCorrect = null }) {
-                            Text("Annuler")
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Button(
-                            onClick = {
-                                if (memberNameInput.isNotBlank()) {
-                                    showConfirmAlert = true
-                                }
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
-                        ) {
-                            Text("Appliquer")
-                        }
-                    }
+        fun applyCorrection(member: Member, markPresent: Boolean) {
+            presentNames = if (markPresent) {
+                presentNames + member.fullName
+            } else {
+                presentNames.filterNot { it.trim().equals(member.fullName.trim(), ignoreCase = true) }.toSet()
+            }
+            onCorrectAttendance(session.id, member.fullName, markPresent)
+        }
+
+        fun handleScan(raw: String) {
+            val payload = raw.trim()
+            if (payload.isBlank()) return
+            val qr = MemberQr.normalize(payload)
+            if (qr.isBlank()) {
+                scanFeedbackError = true
+                scanFeedback = "Lecture non reconnue : le code de la carte n'a pas été trouvé."
+                return
+            }
+            val member = sessionRoster.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
+                ?: qr.removePrefix(MemberQr.PREFIX).toLongOrNull()
+                    ?.let { id -> sessionRoster.firstOrNull { it.id == id } }
+                    ?: members.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
+            when {
+                member == null -> {
+                    scanFeedbackError = true
+                    scanFeedback = "Carte $qr : aucune fiche n'a été trouvée avec ce code."
+                }
+                AbsentSmsNotifier.membersOfGroup(listOf(member), session.groupCode).isEmpty() -> {
+                    scanFeedbackError = true
+                    scanFeedback = "${member.fullName} n'appartient pas à la séance ${session.categoryName}."
+                }
+                isPresent(member) -> {
+                    scanFeedbackError = false
+                    scanFeedback = "${member.fullName} est déjà marqué(e) présent(e) pour cette séance."
+                }
+                else -> {
+                    applyCorrection(member, true)
+                    scanFeedbackError = false
+                    scanFeedback = "${member.fullName} a été marqué(e) présent(e) ✓"
                 }
             }
         }
 
-        if (showConfirmAlert) {
-            AlertDialog(
-                onDismissRequest = { showConfirmAlert = false },
-                title = { Text("Confirmer la modification") },
-                text = {
-                    Text("Confirmez-vous le passage de $memberNameInput au statut ${if (markAsPresent) "PRÉSENT" else "ABSENT"} pour cette séance ?")
-                },
-                confirmButton = {
-                    Button(
-                        onClick = {
-                            onCorrectAttendance(session.id, memberNameInput.trim(), markAsPresent)
-                            showConfirmAlert = false
-                            sessionToCorrect = null
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
+        // A douchette that sends no Enter suffix still completes: handle the code once the
+        // character stream goes quiet, exactly like the in-session scanner buffer.
+        LaunchedEffect(scanBuffer) {
+            val pending = scanBuffer
+            if (pending.isNotBlank()) {
+                delay(450)
+                if (scanBuffer == pending) {
+                    scanBuffer = ""
+                    handleScan(pending)
+                }
+            }
+        }
+        LaunchedEffect(session.id) { scanFocusRequester.requestFocus() }
+
+        val filteredRoster = remember(searchQuery, sessionRoster) {
+            if (searchQuery.isBlank()) sessionRoster
+            else sessionRoster.filter {
+                it.fullName.contains(searchQuery, ignoreCase = true)
+            }
+        }
+
+        AlertDialog(
+            onDismissRequest = { sessionToCorrect = null },
+            modifier = Modifier.widthIn(max = 560.dp).testTag("hist_correction_dialog"),
+            title = {
+                Column {
+                    Text(
+                        text = "Correction administrative",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black)
+                    )
+                    Text(
+                        text = "Séance ${session.categoryName} • ${session.dateString} • ${session.startTime} - ${session.endTime}",
+                        style = MaterialTheme.typography.bodySmall.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("Confirmer la correction")
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = JudoSuccess.copy(alpha = 0.15f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "Présents ${presentCountAll()}",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold, color = JudoSuccess
+                                ),
+                                modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "Absents ${absentCountAll()}",
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.error
+                                ),
+                                modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                            )
+                        }
                     }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showConfirmAlert = false }) {
-                        Text("Annuler")
+
+                    OutlinedTextField(
+                        value = scanBuffer,
+                        onValueChange = { value ->
+                            scanFeedback = null
+                            if (value.contains('\n')) {
+                                value.split('\n').filter { it.isNotBlank() }.forEach { handleScan(it.trim()) }
+                                scanBuffer = value.substringAfterLast('\n')
+                            } else {
+                                scanBuffer = value
+                            }
+                        },
+                        label = { Text("Douchette : scanner la carte") },
+                        placeholder = { Text("Scannez la carte pour pointer l'athlète") },
+                        leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) },
+                        trailingIcon = {
+                            IconButton(onClick = { scanFocusRequester.requestFocus() }) {
+                                Icon(Icons.Default.CenterFocusWeak, contentDescription = "Récapturer la douchette")
+                            }
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                        keyboardActions = KeyboardActions(
+                            onDone = {
+                                if (scanBuffer.isNotBlank()) {
+                                    handleScan(scanBuffer)
+                                    scanBuffer = ""
+                                }
+                            }
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(scanFocusRequester)
+                            .testTag("hist_scan_field")
+                    )
+
+                    scanFeedback?.let { message ->
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (scanFeedbackError) {
+                                MaterialTheme.colorScheme.error.copy(alpha = 0.12f)
+                            } else {
+                                JudoSuccess.copy(alpha = 0.12f)
+                            },
+                            modifier = Modifier.fillMaxWidth().testTag("hist_scan_feedback")
+                        ) {
+                            Text(
+                                text = message,
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (scanFeedbackError) MaterialTheme.colorScheme.error else JudoSuccess
+                                ),
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp)
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Rechercher judoka...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("hist_correction_search_field")
+                    )
+
+                    Text(
+                        text = "Touchez un athlète pour basculer présent/absent (${filteredRoster.size}) :",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    )
+
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(300.dp)
+                            .testTag("hist_correction_list"),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        if (filteredRoster.isEmpty()) {
+                            item {
+                                Box(
+                                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = "Aucun athlète trouvé pour cette séance.",
+                                        style = MaterialTheme.typography.bodySmall.copy(
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            items(filteredRoster, key = { it.id }) { member ->
+                                val isPresentNow = isPresent(member)
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable { applyCorrection(member, !isPresentNow) }
+                                        .padding(8.dp)
+                                        .testTag("hist_correction_row_${member.id}"),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        JudokaAvatar(
+                                            name = member.fullName,
+                                            belt = member.belt,
+                                            photoUrl = member.photoUrl,
+                                            sizeDp = 30
+                                        )
+                                        Column {
+                                            Text(
+                                                text = member.fullName,
+                                                style = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontWeight = FontWeight.SemiBold, fontSize = 14.sp
+                                                )
+                                            )
+                                            Text(
+                                                text = "Ceinture ${member.beltName.lowercase()}",
+                                                style = MaterialTheme.typography.bodySmall.copy(
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                )
+                                            )
+                                        }
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = if (isPresentNow) {
+                                            JudoSuccess.copy(alpha = 0.15f)
+                                        } else {
+                                            MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+                                        }
+                                    ) {
+                                        Text(
+                                            text = if (isPresentNow) "Présent ✓" else "Absent",
+                                            style = MaterialTheme.typography.labelSmall.copy(
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = if (isPresentNow) JudoSuccess else MaterialTheme.colorScheme.error
+                                            ),
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
-            )
-        }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { sessionToCorrect = null },
+                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
+                ) {
+                    Text("Fermer")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { sessionToCorrect = null }) {
+                    Text("Annuler", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        )
     }
     }
 }
 }
+
+    // Multi-delete confirmation
+    if (confirmMultiDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmMultiDelete = false },
+            title = { Text("Supprimer ${selectedForDeletion.size} séance(s) ?") },
+            text = {
+                Text(
+                    "Les séances sélectionnées disparaîtront de l'historique, avec leurs émargements, " +
+                        "du club et du cloud. Cette action est définitive."
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onDeletePastSessions(selectedForDeletion.toList())
+                        confirmMultiDelete = false
+                        selectedForDeletion = emptySet()
+                        deleteSelectionMode = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
+                ) {
+                    Text("Supprimer", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmMultiDelete = false }) {
+                    Text("Annuler")
+                }
+            }
+        )
+    }
 
     if (isCreateEditDialogOpen) {
         CreateEditSessionDialog(

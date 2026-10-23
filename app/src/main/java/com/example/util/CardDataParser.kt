@@ -134,6 +134,9 @@ object CardDataParser {
     private fun looksLikeName(value: String): Boolean {
         val cleaned = value.replace(Regex("[^\\p{L}\\s'\\-]"), " ").replace(Regex("\\s+"), " ").trim()
         if (cleaned.length < 3 || cleaned.length > 40) return false
+        // A name must contain letters: a bare card number line ("121") is a number,
+        // never a person name.
+        if (cleaned.none { it.isLetter() }) return false
         val tokens = cleaned.split(' ').filter { it.isNotBlank() }
         if (tokens.isEmpty() || tokens.size > 4) return false
         val normalized = cleaned.lowercase()

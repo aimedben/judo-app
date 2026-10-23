@@ -336,7 +336,7 @@ fun CoachProfileDialog(
                     Button(
                         onClick = {
                             val base = coachProfile.copy(
-                                name = name.trim().ifBlank { "Sensei Ahmed BOURENANE" },
+                                name = name.trim(),
                                 title = title.trim(),
                                 danGrade = danGrade.trim().ifBlank { "Ceinture Noire" },
                                 phone = phone.trim(),

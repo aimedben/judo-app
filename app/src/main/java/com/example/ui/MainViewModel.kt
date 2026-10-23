@@ -1,4 +1,4 @@
-package com.example.ui
+﻿package com.example.ui
 
 import android.app.Application
 import android.content.Context
@@ -35,6 +35,7 @@ import com.example.data.repository.MemberAttendanceStat
 import com.example.ui.screens.StatPeriod
 import com.example.util.CardDataParser
 import com.example.util.ExtractedMemberInfo
+import com.example.util.GroupCodes
 import com.example.data.local.CategoryEntity
 import com.example.data.local.CoachEntity
 import com.example.data.local.PastSessionEntity
@@ -48,12 +49,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 enum class ThemePreference {
     DARK, LIGHT, SYSTEM
 }
+
+/**
+ * Scan d'un code inconnu portant l'identite d'un athlete : l'ajout doit etre accepte
+ * explicitement (fenetre d'information) avant toute creation de fiche.
+ */
+data class PendingMemberRegistration(
+    val extracted: ExtractedMemberInfo
+)
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -92,8 +103,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun performFullSync(onFinished: ((SyncReport) -> Unit)? = null) {
         viewModelScope.launch {
-            val report = supabaseSyncService.performFullSync()
+            val report = supabaseSyncService.performFullSync(progressiveRefresh())
             _lastSyncReport.value = report
+            if (report.isSuccess && report.itemsReceived > 0) {
+                refreshStatesFromRoom()
+            }
             onFinished?.invoke(report)
         }
     }
@@ -119,7 +133,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
                     val minute = cal.get(java.util.Calendar.MINUTE)
                     if (hour == 22 && minute == 0 && supabaseConfig.value.isDaily22hSyncEnabled && isOnline()) {
-                        supabaseSyncService.performFullSync()
+                        val report = supabaseSyncService.performFullSync(progressiveRefresh())
+                        _lastSyncReport.value = report
+                        if (report.isSuccess && report.itemsReceived > 0) {
+                            refreshStatesFromRoom()
+                        }
                     }
                 } catch (_: Exception) {}
             }
@@ -140,14 +158,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadCoachProfile(): CoachProfile {
         return CoachProfile(
-            name = prefs.getString("coach_name", "Sensei Ahmed BOURENANE") ?: "Sensei Ahmed BOURENANE",
-            title = prefs.getString("coach_title", "Entraîneur Principal") ?: "Entraîneur Principal",
+            name = prefs.getString("coach_name", "") ?: "",
+            title = prefs.getString("coach_title", "EntraÃ®neur Principal") ?: "EntraÃ®neur Principal",
             beltName = prefs.getString("coach_belt", "NOIRE") ?: "NOIRE",
-            danGrade = prefs.getString("coach_dan", "Ceinture Noire 4ème Dan") ?: "Ceinture Noire 4ème Dan",
+            danGrade = prefs.getString("coach_dan", "Ceinture Noire 4Ã¨me Dan") ?: "Ceinture Noire 4Ã¨me Dan",
             phone = prefs.getString("coach_phone", "0782487120") ?: "0782487120",
             photoUrl = prefs.getString("coach_photo_url", "") ?: "",
             clubName = prefs.getString("coach_club", "JUDO CLUB SEDDOUK") ?: "JUDO CLUB SEDDOUK",
-            bio = prefs.getString("coach_bio", "Professeur diplômé d'État • Dojo Municipal de Seddouk") ?: "Professeur diplômé d'État • Dojo Municipal de Seddouk"
+            bio = prefs.getString("coach_bio", "Professeur diplÃ´mÃ© d'Ã‰tat â€¢ Dojo Municipal de Seddouk") ?: "Professeur diplÃ´mÃ© d'Ã‰tat â€¢ Dojo Municipal de Seddouk"
         )
     }
 
@@ -172,16 +190,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Categories Management
-    private val _categories = MutableStateFlow<List<JudoCategory>>(
-        listOf(
-            JudoCategory("baby", "Baby Judo", "EVEIL", "Sensei Ahmed", "Coach Yacine", "Initiation 4-5 ans"),
-            JudoCategory("poussins", "Poussins", "U11", "Sensei Ahmed", "Coach Karim", "Enfants 8-9 ans"),
-            JudoCategory("benjamins", "Benjamins", "U13", "Sensei Ahmed", "Coach Yacine", "Jeunes 10-11 ans"),
-            JudoCategory("minimes", "Minimes", "U15", "Sensei Ahmed", "Coach Karim", "Cadres 12-13 ans"),
-            JudoCategory("cadets", "Cadets", "U18", "Coach Yacine", "Sensei Ahmed", "Compétition 14-16 ans"),
-            JudoCategory("adultes", "Adultes & Séniors", "SENIOR", "Sensei Ahmed", "Coach Yacine", "Juniors & Séniors 17+ ans")
-        )
-    )
+    // No bundled demo categories: the app starts empty and gets its real content
+    // from Room (populated by the Supabase pull). An empty state must never be
+    // seeded back into the queue.
+    private val _categories = MutableStateFlow<List<JudoCategory>>(emptyList())
     val categories: StateFlow<List<JudoCategory>> = _categories.asStateFlow()
 
     private val _userRole = MutableStateFlow(UserRole.COACH)
@@ -200,85 +212,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _coachScanFeedback.value = null
     }
 
-    private val _pastSessions = MutableStateFlow<List<PastTrainingSession>>(
-        listOf(
-            PastTrainingSession(
-                categoryId = "benjamins",
-                categoryName = "Benjamins",
-                groupCode = "U13",
-                dateString = "Mercredi 8 Octobre 2026",
-                startTime = "17:30",
-                endTime = "19:00",
-                coach1Name = "Sensei Ahmed",
-                coach1Present = true,
-                coach2Name = "Coach Yacine",
-                coach2Present = true,
-                presentCount = 18,
-                absentCount = 3,
-                presentMemberNames = listOf("Karim Belkacem", "Amine Mansouri", "Yanis Ait-Ali", "Mehdi Saidi", "Sami Benali", "Ines Meziane"),
-                absentMemberNames = listOf("Rayane Hamdi", "Lina Khelif", "Adel Boudiaf")
-            ),
-            PastTrainingSession(
-                categoryId = "benjamins",
-                categoryName = "Benjamins",
-                groupCode = "U13",
-                dateString = "Lundi 6 Octobre 2026",
-                startTime = "17:30",
-                endTime = "19:00",
-                coach1Name = "Sensei Ahmed",
-                coach1Present = true,
-                coach2Name = "Coach Yacine",
-                coach2Present = false,
-                presentCount = 19,
-                absentCount = 2,
-                presentMemberNames = listOf("Karim Belkacem", "Amine Mansouri", "Rayane Hamdi", "Yanis Ait-Ali", "Mehdi Saidi"),
-                absentMemberNames = listOf("Sami Benali", "Lina Khelif")
-            ),
-            PastTrainingSession(
-                categoryId = "minimes",
-                categoryName = "Minimes",
-                groupCode = "U15",
-                dateString = "Mardi 7 Octobre 2026",
-                startTime = "18:00",
-                endTime = "19:30",
-                coach1Name = "Sensei Ahmed",
-                coach1Present = true,
-                coach2Name = "Coach Karim",
-                coach2Present = true,
-                presentCount = 15,
-                absentCount = 2,
-                presentMemberNames = listOf("Tarek Bouzid", "Walid Cherif", "Sofiane Brahimi", "Nassim Hadj"),
-                absentMemberNames = listOf("Bilal Kaci", "Malik Oualid")
-            ),
-            PastTrainingSession(
-                categoryId = "baby",
-                categoryName = "Baby Judo",
-                groupCode = "EVEIL",
-                dateString = "Samedi 4 Octobre 2026",
-                startTime = "10:00",
-                endTime = "11:00",
-                coach1Name = "Sensei Ahmed",
-                coach1Present = true,
-                coach2Name = "Coach Yacine",
-                coach2Present = true,
-                presentCount = 14,
-                absentCount = 1,
-                presentMemberNames = listOf("Adam Khelil", "Nour Benali", "Ilyas Messaoudi", "Yasmine Larbi"),
-                absentMemberNames = listOf("Maya Boualem")
-            )
-        )
-    )
+    // No bundled demo history: the history is fed by Room (pull from Supabase).
+    private val _pastSessions = MutableStateFlow<List<PastTrainingSession>>(emptyList())
     val pastSessions: StateFlow<List<PastTrainingSession>> = _pastSessions.asStateFlow()
 
     // Coach Users Management
-    private val _coaches = MutableStateFlow<List<CoachUser>>(
-        listOf(
-            CoachUser("c1", "Sensei Ahmed BOURENANE", "Ceinture Noire 4ème Dan", "0782487120", listOf("Baby Judo", "Poussins", "Benjamins", "Minimes", "Adultes & Séniors"), true, 42),
-            CoachUser("c2", "Coach Yacine HAMIDI", "Ceinture Noire 2ème Dan", "0550123456", listOf("Baby Judo", "Benjamins", "Cadets", "Adultes & Séniors"), true, 28),
-            CoachUser("c3", "Coach Karim BELKACEM", "Ceinture Noire 1er Dan", "0661987654", listOf("Poussins", "Minimes"), true, 19),
-            CoachUser("c4", "Coach Amina SAIDI", "Ceinture Marron", "0770345678", listOf("Baby Judo"), true, 12)
-        )
-    )
+    // No bundled demo coaches: the coach list comes from Room after the pull.
+    private val _coaches = MutableStateFlow<List<CoachUser>>(emptyList())
     val coaches: StateFlow<List<CoachUser>> = _coaches.asStateFlow()
 
     private fun loadCoachesFromDatabase() {
@@ -352,13 +292,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val stored = database.clubDao().getAllCategories()
                 if (stored.isNotEmpty()) {
+                    // Source de verite unique : la base (categories creees par l'admin et
+                    // synchronisees depuis Supabase). Aucune categorie inventee par le code,
+                    // aucune fusion/renommage automatique.
                     _categories.value = stored.map { it.toDomain() }
-                } else if (_categories.value.isNotEmpty()) {
-                    // First run: persist the default categories so they survive a restart and
-                    // are backed up to the cloud.
-                    val defaults = _categories.value
-                    database.clubDao().insertCategories(defaults.map { CategoryEntity.fromDomain(it) })
-                    defaults.forEach { supabaseSyncService.enqueueCategory(CategoryEntity.fromDomain(it)) }
+                } else {
+                    // Base locale vide : on ne fabrique AUCUNE categorie. Le contenu reel
+                    // vient du cloud (pull -> Room), jamais du code.
+                    _categories.value = emptyList()
                 }
             } catch (_: Exception) {
             }
@@ -375,6 +316,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistCategory(category)
     }
 
+    /**
+     * Removes a category everywhere it lives: UI state (plus the selection that pointed
+     * at it), Room, and the cloud table on the next sync.
+     */
+    fun deleteCategory(categoryId: String) {
+        val removed = _categories.value.firstOrNull { it.id == categoryId }
+        _categories.value = _categories.value.filterNot { it.id == categoryId }
+        if (_selectedCategory.value?.id == categoryId) {
+            _selectedCategory.value = null
+        }
+        viewModelScope.launch {
+            try {
+                database.clubDao().deleteCategoryById(categoryId)
+            } catch (_: Exception) {
+            }
+            supabaseSyncService.enqueueDelete("CATEGORIES", categoryId)
+        }
+    }
+
     fun toggleCategoryActive(categoryId: String) {
         _categories.value = _categories.value.map {
             if (it.id == categoryId) it.copy(isActive = !it.isActive) else it
@@ -386,7 +346,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun assignCoachToCategory(categoryId: String, coachName: String) {
         _categories.value = _categories.value.map { cat ->
             if (cat.id == categoryId) {
-                if (cat.coach1Name.isBlank() || cat.coach1Name == "Non assigné") {
+                if (cat.coach1Name.isBlank() || cat.coach1Name == "Non assignÃ©") {
                     cat.copy(coach1Name = coachName)
                 } else {
                     cat.copy(coach2Name = coachName)
@@ -394,14 +354,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else cat
         }
         _coaches.value = _coaches.value.map { coach ->
-            if (coach.name.equals(coachName, ignoreCase = true)) {
+            if (com.example.util.CoachNameKey.same(coach.name, coachName)) {
                 val catName = _categories.value.find { it.id == categoryId }?.name ?: categoryId
                 if (!coach.assignedCategories.contains(catName)) {
                     coach.copy(assignedCategories = coach.assignedCategories + catName)
                 } else coach
             } else coach
         }
-        _coaches.value.filter { it.name.equals(coachName, ignoreCase = true) }.forEach { persistCoach(it) }
+        _coaches.value.filter { com.example.util.CoachNameKey.same(it.name, coachName) }.forEach { persistCoach(it) }
         _categories.value.firstOrNull { it.id == categoryId }?.let { persistCategory(it) }
     }
 
@@ -409,219 +369,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _categories.value = _categories.value.map { cat ->
             if (cat.id == categoryId) {
                 when {
-                    cat.coach1Name.equals(coachName, ignoreCase = true) -> cat.copy(coach1Name = cat.coach2Name, coach2Name = "")
-                    cat.coach2Name.equals(coachName, ignoreCase = true) -> cat.copy(coach2Name = "")
+                    com.example.util.CoachNameKey.same(cat.coach1Name, coachName) -> cat.copy(coach1Name = cat.coach2Name, coach2Name = "")
+                    com.example.util.CoachNameKey.same(cat.coach2Name, coachName) -> cat.copy(coach2Name = "")
                     else -> cat
                 }
             } else cat
         }
         _coaches.value = _coaches.value.map { coach ->
-            if (coach.name.equals(coachName, ignoreCase = true)) {
+            if (com.example.util.CoachNameKey.same(coach.name, coachName)) {
                 val catName = _categories.value.find { it.id == categoryId }?.name ?: categoryId
                 coach.copy(assignedCategories = coach.assignedCategories.filterNot { it.equals(catName, ignoreCase = true) })
             } else coach
         }
-        _coaches.value.filter { it.name.equals(coachName, ignoreCase = true) }.forEach { persistCoach(it) }
+        _coaches.value.filter { com.example.util.CoachNameKey.same(it.name, coachName) }.forEach { persistCoach(it) }
         _categories.value.firstOrNull { it.id == categoryId }?.let { persistCategory(it) }
     }
 
     // Scheduled Training Sessions (Weekly Planning & Calendar)
-    private val _scheduledSessions = MutableStateFlow<List<ScheduledTrainingSession>>(
-        listOf(
-            ScheduledTrainingSession(
-                id = "s_baby_sam",
-                categoryId = "baby",
-                categoryName = "Baby Judo",
-                groupCode = "EVEIL",
-                dayOfWeekName = "Samedi",
-                dateString = "2026-10-17",
-                formattedDisplayDate = "Samedi 17 Octobre 2026",
-                startTime = "10:00",
-                endTime = "11:00",
-                coachIds = listOf("c1", "c2"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Yacine HAMIDI"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Éveil moteur & chutes de base"
-            ),
-            ScheduledTrainingSession(
-                id = "s_adultes_sam",
-                categoryId = "adultes",
-                categoryName = "Adultes & Séniors",
-                groupCode = "SENIOR",
-                dayOfWeekName = "Samedi",
-                dateString = "2026-10-17",
-                formattedDisplayDate = "Samedi 17 Octobre 2026",
-                startTime = "18:00",
-                endTime = "20:00",
-                coachIds = listOf("c1", "c2"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Yacine HAMIDI"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Ne-waza & Randori intensif"
-            ),
-            ScheduledTrainingSession(
-                id = "s_poussins_lun",
-                categoryId = "poussins",
-                categoryName = "Poussins",
-                groupCode = "U11",
-                dayOfWeekName = "Lundi",
-                dateString = "2026-10-12",
-                formattedDisplayDate = "Lundi 12 Octobre 2026",
-                startTime = "17:00",
-                endTime = "18:30",
-                coachIds = listOf("c1", "c3"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Karim BELKACEM"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Technique debout : O-Soto-Gari"
-            ),
-            ScheduledTrainingSession(
-                id = "s_benjamins_lun",
-                categoryId = "benjamins",
-                categoryName = "Benjamins",
-                groupCode = "U13",
-                dayOfWeekName = "Lundi",
-                dateString = "2026-10-12",
-                formattedDisplayDate = "Lundi 12 Octobre 2026",
-                startTime = "17:30",
-                endTime = "19:00",
-                coachIds = listOf("c1", "c2"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Yacine HAMIDI"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Kumikata et déplacements"
-            ),
-            ScheduledTrainingSession(
-                id = "s_minimes_mar",
-                categoryId = "minimes",
-                categoryName = "Minimes",
-                groupCode = "U15",
-                dayOfWeekName = "Mardi",
-                dateString = "2026-10-13",
-                formattedDisplayDate = "Mardi 13 Octobre 2026",
-                startTime = "18:00",
-                endTime = "19:30",
-                coachIds = listOf("c1", "c3"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Karim BELKACEM"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Perfectionnement Seoi-Nage"
-            ),
-            ScheduledTrainingSession(
-                id = "s_cadets_mar",
-                categoryId = "cadets",
-                categoryName = "Cadets",
-                groupCode = "U18",
-                dayOfWeekName = "Mardi",
-                dateString = "2026-10-13",
-                formattedDisplayDate = "Mardi 13 Octobre 2026",
-                startTime = "19:30",
-                endTime = "21:00",
-                coachIds = listOf("c2", "c1"),
-                coachNames = listOf("Coach Yacine HAMIDI", "Sensei Ahmed BOURENANE"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Préparation régionale & liaison debout-sol"
-            ),
-            ScheduledTrainingSession(
-                id = "s_baby_mer",
-                categoryId = "baby",
-                categoryName = "Baby Judo",
-                groupCode = "EVEIL",
-                dayOfWeekName = "Mercredi",
-                dateString = "2026-10-14",
-                formattedDisplayDate = "Mercredi 14 Octobre 2026",
-                startTime = "14:00",
-                endTime = "15:00",
-                coachIds = listOf("c1", "c4"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Amina SAIDI"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Parcours d'agilité & jeux d'opposition"
-            ),
-            ScheduledTrainingSession(
-                id = "s_benjamins_mer",
-                categoryId = "benjamins",
-                categoryName = "Benjamins",
-                groupCode = "U13",
-                dayOfWeekName = "Mercredi",
-                dateString = "2026-10-14",
-                formattedDisplayDate = "Mercredi 14 Octobre 2026",
-                startTime = "17:30",
-                endTime = "19:00",
-                coachIds = listOf("c1", "c2"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Yacine HAMIDI"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Enchaînements & combinaisons"
-            ),
-            ScheduledTrainingSession(
-                id = "s_adultes_mer",
-                categoryId = "adultes",
-                categoryName = "Adultes & Séniors",
-                groupCode = "SENIOR",
-                dayOfWeekName = "Mercredi",
-                dateString = "2026-10-14",
-                formattedDisplayDate = "Mercredi 14 Octobre 2026",
-                startTime = "19:30",
-                endTime = "21:30",
-                coachIds = listOf("c1", "c2"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Yacine HAMIDI"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Kata & perfectionnement technique"
-            ),
-            ScheduledTrainingSession(
-                id = "s_poussins_jeu",
-                categoryId = "poussins",
-                categoryName = "Poussins",
-                groupCode = "U11",
-                dayOfWeekName = "Jeudi",
-                dateString = "2026-10-15",
-                formattedDisplayDate = "Jeudi 15 Octobre 2026",
-                startTime = "17:00",
-                endTime = "18:30",
-                coachIds = listOf("c1", "c3"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Karim BELKACEM"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Randori éducatif"
-            ),
-            ScheduledTrainingSession(
-                id = "s_cadets_jeu",
-                categoryId = "cadets",
-                categoryName = "Cadets",
-                groupCode = "U18",
-                dayOfWeekName = "Jeudi",
-                dateString = "2026-10-15",
-                formattedDisplayDate = "Jeudi 15 Octobre 2026",
-                startTime = "19:30",
-                endTime = "21:00",
-                coachIds = listOf("c2", "c1"),
-                coachNames = listOf("Coach Yacine HAMIDI", "Sensei Ahmed BOURENANE"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Situation de compétition & arbitrage"
-            ),
-            ScheduledTrainingSession(
-                id = "s_minimes_ven",
-                categoryId = "minimes",
-                categoryName = "Minimes",
-                groupCode = "U15",
-                dayOfWeekName = "Vendredi",
-                dateString = "2026-10-16",
-                formattedDisplayDate = "Vendredi 16 Octobre 2026",
-                startTime = "18:00",
-                endTime = "19:30",
-                coachIds = listOf("c1", "c3"),
-                coachNames = listOf("Sensei Ahmed BOURENANE", "Coach Karim BELKACEM"),
-                isRecurringWeekly = true,
-                status = SessionStatus.SCHEDULED,
-                notes = "Randori à thèmes"
-            )
-        )
-    )
+    // No bundled demo planning: the planning comes from Room after the pull.
+    private val _scheduledSessions = MutableStateFlow<List<ScheduledTrainingSession>>(emptyList())
     private fun saveScheduledSessionsToPrefs() {
         try {
             val json = serializeScheduledSessions(_scheduledSessions.value)
@@ -730,10 +496,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
         viewModelScope.launch {
-            repository.seedInitialDataIfEmpty()
+            // Repare une fois les fiches dont le code QR contient encore la charge utile
+            // brute d'une carte (anciennes versions) : "N: 355 ..." -> "JCS-355".
+            try {
+                repository.repairMalformedQrCodes()
+            } catch (_: Exception) {
+            }
             if (supabaseConfig.value.isConfigured && isOnline()) {
-                val report = supabaseSyncService.performFullSync()
+                val report = supabaseSyncService.performFullSync(progressiveRefresh())
                 _lastSyncReport.value = report
+                if (report.isSuccess && report.itemsReceived > 0) {
+                    refreshStatesFromRoom()
+                }
             }
         }
         loadCoachesFromDatabase()
@@ -741,43 +515,100 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadPastSessionsFromDatabase()
         loadScheduledSessionsFromDatabase()
         startDaily22hSyncChecker()
+        startLocalSnapshotWriter()
     }
 
     /**
-     * Mirrors the scheduled sessions into Room on start-up when the table is still empty
-     * (first run after this feature was added), then never again: [saveScheduledSessionsToPrefs]
-     * keeps it in sync afterwards.
+     * Sauvegarde locale instantanee : a chaque changement (athlete, presence, categorie,
+     * planning, historique) la base complete est ecrite dans le fichier `jcsdb`
+     * (stockage de l'app). Debounce court pour ne pas ecrire pendant une rafale de scans.
+     */
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private fun startLocalSnapshotWriter() {
+        viewModelScope.launch {
+            kotlinx.coroutines.flow.merge(
+                _categories.map { },
+                _coaches.map { },
+                _scheduledSessions.map { },
+                _pastSessions.map { },
+                repository.allMembers.map { },
+                repository.allAttendance.map { }
+            )
+                .debounce(1200)
+                .collect {
+                    try {
+                        val json = supabaseSyncService.generateBackupJson()
+                        com.example.data.local.LocalSnapshotStore.write(getApplication(), json)
+                    } catch (_: Exception) {
+                    }
+                }
+        }
+    }
+
+    /**
+     * Re-reads every UI-facing collection from Room after a successful pull, so the
+     * screen content never lags one app restart behind the cloud content.
+     */
+    private fun refreshStatesFromRoom() {
+        loadCoachesFromDatabase()
+        loadCategoriesFromDatabase()
+        loadPastSessionsFromDatabase()
+        loadScheduledSessionsFromDatabase()
+        // Le profil administrateur / coach a pu etre complete par le pull club_settings.
+        _adminProfile.value = loadAdminProfile()
+        _coachProfile.value = loadCoachProfile()
+    }
+
+    /** Rafraichit l'ecran des qu'une section du pull est terminee (planning avant athletes). */
+    private fun progressiveRefresh(): () -> Unit = {
+        refreshStatesFromRoom()
+    }
+
+    /**
+     * Loads the scheduled sessions from Room into the UI state. New content can only
+     * arrive through the pull (Room) or user mutations (which re-persist on their own),
+     * so this stays a plain Room-first reader.
      */
     private fun loadScheduledSessionsFromDatabase() {
         viewModelScope.launch {
             try {
                 val stored = database.clubDao().getAllScheduledSessions()
-                if (stored.isEmpty() && _scheduledSessions.value.isNotEmpty()) {
-                    val defaults = _scheduledSessions.value
-                    database.clubDao().insertScheduledSessions(defaults.map { ScheduledSessionEntity.fromDomain(it) })
-                    defaults.forEach { supabaseSyncService.enqueueScheduledSession(ScheduledSessionEntity.fromDomain(it)) }
+                if (stored.isNotEmpty()) {
+                    // Anti-doublon : un meme creneau (categorie + jour + horaires) ne doit
+                    // apparaitre qu'une seule fois. Les lignes en trop (anciennes versions qui
+                    // declinaient la recurrence semaine par semaine) sont ecartees puis la
+                    // version nettoyee est re-miroitee en base.
+                    val seen = mutableSetOf<String>()
+                    val deduped = mutableListOf<ScheduledTrainingSession>()
+                    for (entity in stored) {
+                        val session = entity.toDomain()
+                        val key = listOf(
+                            session.categoryId,
+                            session.dayOfWeekName.lowercase(),
+                            session.startTime,
+                            session.endTime
+                        ).joinToString("|")
+                        if (seen.add(key)) deduped.add(session)
+                    }
+                    _scheduledSessions.value = deduped
+                    if (deduped.size != stored.size) saveScheduledSessionsToPrefs()
                 }
             } catch (_: Exception) {
             }
         }
     }
 
+    /**
+     * Ajoute UN seul creneau au planning (une seule ligne en base).
+     *
+     * Le caractere "toute la saison" est porte par [ScheduledTrainingSession.isRecurringWeekly] :
+     * le creneau se repete chaque semaine tout seul. On ne materialise donc plus une ligne par
+     * semaine (c'etait la cause des doublons dans le planning).
+     */
+    @Suppress("UNUSED_PARAMETER")
     fun addScheduledSession(session: ScheduledTrainingSession, repeatWeeks: Int = 1) {
         val seriesId = if (session.isRecurringWeekly) java.util.UUID.randomUUID().toString() else null
-        val baseSession = session.copy(seriesId = seriesId)
-        val newSessions = mutableListOf(baseSession)
-
-        if (session.isRecurringWeekly && repeatWeeks > 1) {
-            for (w in 1 until repeatWeeks) {
-                newSessions.add(
-                    baseSession.copy(
-                        id = java.util.UUID.randomUUID().toString(),
-                        seriesId = seriesId
-                    )
-                )
-            }
-        }
-        _scheduledSessions.value = _scheduledSessions.value + newSessions
+        _scheduledSessions.value = _scheduledSessions.value + session.copy(seriesId = seriesId)
         saveScheduledSessionsToPrefs()
     }
 
@@ -817,12 +648,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteScheduledSession(sessionId: String, scope: RecurrenceScope = RecurrenceScope.THIS_ONLY) {
         val target = _scheduledSessions.value.find { it.id == sessionId }
-        _scheduledSessions.value = if (scope == RecurrenceScope.ALL_SERIES && target?.seriesId != null) {
-            _scheduledSessions.value.filterNot { it.seriesId == target.seriesId }
+        val removed = if (scope == RecurrenceScope.ALL_SERIES && target?.seriesId != null) {
+            _scheduledSessions.value.filter { it.seriesId == target.seriesId }
         } else {
-            _scheduledSessions.value.filterNot { it.id == sessionId }
+            _scheduledSessions.value.filter { it.id == sessionId }
+        }
+        _scheduledSessions.value = _scheduledSessions.value.filterNot { removedSession ->
+            removed.any { it.id == removedSession.id }
         }
         saveScheduledSessionsToPrefs()
+        viewModelScope.launch {
+            for (session in removed) {
+                try {
+                    database.clubDao().deleteScheduledSessionById(session.id)
+                } catch (_: Exception) {
+                }
+                supabaseSyncService.enqueueDelete("SCHEDULED_SESSIONS", session.id)
+            }
+        }
+    }
+
+    /**
+     * Deletes history entries (multi-selection): the UI state drops them at once, then
+     * [deletePastSessionsCascade] removes the local Room rows, the session attendances
+     * and queues the cloud DELETEs.
+     */
+    fun deletePastSessions(sessionIds: List<String>) {
+        if (sessionIds.isEmpty()) return
+        val idSet = sessionIds.toSet()
+        val removed = _pastSessions.value.filter { it.id in idSet }
+        _pastSessions.value = _pastSessions.value.filterNot { it.id in idSet }
+        viewModelScope.launch {
+            try {
+                repository.deletePastSessionsCascade(removed.map { PastSessionEntity.fromDomain(it) })
+            } catch (_: Exception) {
+            }
+        }
     }
 
     fun getNextSessionForCategory(categoryId: String): ScheduledTrainingSession? {
@@ -869,7 +730,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             conflicts.add(
                 SessionConflict(
                     type = ConflictType.INVALID_TIME,
-                    message = "L'heure de fin (${newSession.endTime}) doit être postérieure à l'heure de début (${newSession.startTime}).",
+                    message = "L'heure de fin (${newSession.endTime}) doit Ãªtre postÃ©rieure Ã  l'heure de dÃ©but (${newSession.startTime}).",
                     isBlocking = true
                 )
             )
@@ -879,7 +740,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 conflicts.add(
                     SessionConflict(
                         type = ConflictType.INVALID_DURATION,
-                        message = "La durée minimale d'une séance est de 30 minutes ($duration min actuellement).",
+                        message = "La durÃ©e minimale d'une sÃ©ance est de 30 minutes ($duration min actuellement).",
                         isBlocking = true
                     )
                 )
@@ -887,7 +748,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 conflicts.add(
                     SessionConflict(
                         type = ConflictType.INVALID_DURATION,
-                        message = "La durée maximale d'une séance est de 4 heures ($duration min actuellement).",
+                        message = "La durÃ©e maximale d'une sÃ©ance est de 4 heures ($duration min actuellement).",
                         isBlocking = true
                     )
                 )
@@ -913,9 +774,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         SessionConflict(
                             type = ConflictType.CATEGORY_OVERLAP,
                             message = if (isExact) {
-                                "Doublon interdit : la catégorie ${newSession.categoryName} a déjà ce créneau le ${newSession.dayOfWeekName} (${existing.startTime} - ${existing.endTime})."
+                                "Doublon interdit : la catÃ©gorie ${newSession.categoryName} a dÃ©jÃ  ce crÃ©neau le ${newSession.dayOfWeekName} (${existing.startTime} - ${existing.endTime})."
                             } else {
-                                "Chevauchement horaire : la catégorie ${newSession.categoryName} a déjà une séance prévue sur ce créneau (${existing.startTime} - ${existing.endTime})."
+                                "Chevauchement horaire : la catÃ©gorie ${newSession.categoryName} a dÃ©jÃ  une sÃ©ance prÃ©vue sur ce crÃ©neau (${existing.startTime} - ${existing.endTime})."
                             },
                             conflictingSession = existing,
                             isBlocking = true
@@ -930,7 +791,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     conflicts.add(
                         SessionConflict(
                             type = ConflictType.COACH_OVERLAP,
-                            message = "${commonCoaches.joinToString(", ")} est déjà affecté(e) à ${existing.categoryName} (${existing.startTime} - ${existing.endTime}).",
+                            message = "${commonCoaches.joinToString(", ")} est dÃ©jÃ  affectÃ©(e) Ã  ${existing.categoryName} (${existing.startTime} - ${existing.endTime}).",
                             conflictingSession = existing,
                             isBlocking = false
                         )
@@ -956,15 +817,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // Club Settings Management
-    private val _clubSettings = MutableStateFlow(
-        ClubSettings(
-            clubName = prefs.getString("club_name", "Judo Club Seddouk") ?: "Judo Club Seddouk",
-            dojoAddress = prefs.getString("club_address", "Dojo Municipal de Seddouk, 06000 Seddouk") ?: "Dojo Municipal de Seddouk, 06000 Seddouk",
-            phone = prefs.getString("club_phone", "07 82 48 71 20") ?: "07 82 48 71 20",
-            season = prefs.getString("club_season", "2024 - 2025") ?: "2024 - 2025",
-            openingHours = prefs.getString("club_hours", "Samedi - Jeudi : 09h00 - 21h00") ?: "Samedi - Jeudi : 09h00 - 21h00"
-        )
+    private fun readClubSettings(): ClubSettings = ClubSettings(
+        clubName = prefs.getString("club_name", "Judo Club Seddouk") ?: "Judo Club Seddouk",
+        dojoAddress = prefs.getString("club_address", "Dojo Municipal de Seddouk, 06000 Seddouk") ?: "Dojo Municipal de Seddouk, 06000 Seddouk",
+        phone = prefs.getString("club_phone", "07 82 48 71 20") ?: "07 82 48 71 20",
+        season = prefs.getString("club_season", "2024 - 2025") ?: "2024 - 2025",
+        openingHours = prefs.getString("club_hours", "Samedi - Jeudi : 09h00 - 21h00") ?: "Samedi - Jeudi : 09h00 - 21h00",
+        officialStartDate = prefs.getString("official_start_date", "") ?: "",
+        smsSenderNumber = prefs.getString("sms_sender_number", "") ?: ""
     )
+
+    private val _clubSettings = MutableStateFlow(readClubSettings())
     val clubSettings: StateFlow<ClubSettings> = _clubSettings.asStateFlow()
 
     fun updateClubSettings(settings: ClubSettings) {
@@ -975,25 +838,30 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .putString("club_phone", settings.phone)
             .putString("club_season", settings.season)
             .putString("club_hours", settings.openingHours)
+            .putString("official_start_date", settings.officialStartDate)
+            .putString("sms_sender_number", settings.smsSenderNumber)
             .apply()
+        // La date de debut filtre les statistiques : on recharge l'etat affiche
+        // immediatement (lecture locale, aucune requete reseau).
+        loadPastSessionsFromDatabase()
         viewModelScope.launch { supabaseSyncService.enqueueClubSettings() }
     }
 
     // Admin Profile Management
-    private val _adminProfile = MutableStateFlow(
-        run {
-            val savedPin = prefs.getString("admin_pin", "2026") ?: "2026"
-            val effectivePin = if (savedPin == "1234") "2026" else savedPin
-            AdminProfile(
-                name = prefs.getString("admin_name", "Sensei Ahmed BOURENANE") ?: "Sensei Ahmed BOURENANE",
-                phone = prefs.getString("admin_phone", "07 82 48 71 20") ?: "07 82 48 71 20",
-                email = prefs.getString("admin_email", "contact@judoclubseddouk.dz") ?: "contact@judoclubseddouk.dz",
-                role = prefs.getString("admin_role", "Directeur Technique & Administrateur") ?: "Directeur Technique & Administrateur",
-                pinCode = effectivePin,
-                photoUri = prefs.getString("admin_photo_uri", null)
-            )
-        }
-    )
+    private fun loadAdminProfile(): AdminProfile {
+        val savedPin = prefs.getString("admin_pin", "2026") ?: "2026"
+        val effectivePin = if (savedPin == "1234") "2026" else savedPin
+        return AdminProfile(
+            name = prefs.getString("admin_name", "") ?: "",
+            phone = prefs.getString("admin_phone", "07 82 48 71 20") ?: "07 82 48 71 20",
+            email = prefs.getString("admin_email", "contact@judoclubseddouk.dz") ?: "contact@judoclubseddouk.dz",
+            role = prefs.getString("admin_role", "Directeur Technique & Administrateur") ?: "Directeur Technique & Administrateur",
+            pinCode = effectivePin,
+            photoUri = prefs.getString("admin_photo_uri", null)
+        )
+    }
+
+    private val _adminProfile = MutableStateFlow(loadAdminProfile())
     val adminProfile: StateFlow<AdminProfile> = _adminProfile.asStateFlow()
 
     fun updateAdminProfile(profile: AdminProfile) {
@@ -1021,15 +889,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ),
             AdminNotification(
                 id = "n2",
-                title = "Séance Benjamins terminée",
-                message = "Entraînement terminé avec 18 présents sur 21 (86%).",
-                timeAgo = "Hier à 19h00",
+                title = "SÃ©ance Benjamins terminÃ©e",
+                message = "EntraÃ®nement terminÃ© avec 18 prÃ©sents sur 21 (86%).",
+                timeAgo = "Hier Ã  19h00",
                 type = NotificationType.SESSION
             ),
             AdminNotification(
                 id = "n3",
-                title = "Certificats médicaux",
-                message = "2 athlètes doivent renouveler leur certificat médical ce mois-ci.",
+                title = "Certificats mÃ©dicaux",
+                message = "2 athlÃ¨tes doivent renouveler leur certificat mÃ©dical ce mois-ci.",
                 timeAgo = "Il y a 2 jours",
                 type = NotificationType.MEDICAL
             )
@@ -1067,13 +935,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val stored = database.clubDao().getAllPastSessions()
                 if (stored.isNotEmpty()) {
-                    _pastSessions.value = stored.map { it.toDomain() }
-                } else if (_pastSessions.value.isNotEmpty()) {
-                    // First run: persist the default history so it survives a restart and is
-                    // backed up to the cloud.
-                    val defaults = _pastSessions.value
-                    database.clubDao().insertPastSessions(defaults.map { PastSessionEntity.fromDomain(it) })
-                    defaults.forEach { supabaseSyncService.enqueuePastSession(PastSessionEntity.fromDomain(it)) }
+                    // Seules les seances officielles comptent (date de debut reglable).
+                    // Rien n'est supprime : la base conserve tout l'historique.
+                    val start = _clubSettings.value.officialStartDate
+                    _pastSessions.value = stored.map { it.toDomain() }.filter {
+                        com.example.util.OfficialPeriod.isOfficial(it.dateString, start)
+                    }
+                } else {
+                    // Aucun historique en dur : base vide => liste vide (le pull fait foi).
+                    _pastSessions.value = emptyList()
                 }
             } catch (_: Exception) {
             }
@@ -1081,11 +951,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun correctSessionAttendance(sessionId: String, memberName: String, markAsPresent: Boolean) {
+        // Comparaison insensible a la casse : les listes enregistrees (import Excel, fiches
+        // renommees) peuvent differer du fullName actuel et la correction doit toujours mordre.
+        fun sameName(a: String, b: String): Boolean = a.trim().equals(b.trim(), ignoreCase = true)
+
         _pastSessions.value = _pastSessions.value.map { session ->
             if (session.id == sessionId) {
                 if (markAsPresent) {
-                    val newAbsents = session.absentMemberNames.filter { it != memberName }
-                    val newPresents = if (memberName !in session.presentMemberNames) session.presentMemberNames + memberName else session.presentMemberNames
+                    val newAbsents = session.absentMemberNames.filter { !sameName(it, memberName) }
+                    val newPresents = if (session.presentMemberNames.any { sameName(it, memberName) }) {
+                        session.presentMemberNames
+                    } else {
+                        session.presentMemberNames + memberName
+                    }
                     session.copy(
                         presentCount = newPresents.size,
                         absentCount = newAbsents.size,
@@ -1093,8 +971,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         absentMemberNames = newAbsents
                     )
                 } else {
-                    val newPresents = session.presentMemberNames.filter { it != memberName }
-                    val newAbsents = if (memberName !in session.absentMemberNames) session.absentMemberNames + memberName else session.absentMemberNames
+                    val newPresents = session.presentMemberNames.filter { !sameName(it, memberName) }
+                    val newAbsents = if (session.absentMemberNames.any { sameName(it, memberName) }) {
+                        session.absentMemberNames
+                    } else {
+                        session.absentMemberNames + memberName
+                    }
                     session.copy(
                         presentCount = newPresents.size,
                         absentCount = newAbsents.size,
@@ -1166,8 +1048,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val recentAttendance: StateFlow<List<AttendanceWithMember>> = repository.recentAttendance
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
-    val allAttendance: StateFlow<List<AttendanceWithMember>> = repository.allAttendance
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+    /**
+     * Pointages officiels uniquement : tout ce qui precede la date de debut du pointage
+     * officiel (reglage club) est exclu des statistiques, sans rien supprimer de la base.
+     */
+    val allAttendance: StateFlow<List<AttendanceWithMember>> =
+        kotlinx.coroutines.flow.combine(repository.allAttendance, _clubSettings) { rows, settings ->
+            val start = settings.officialStartDate
+            if (start.isBlank()) rows
+            else rows.filter {
+                com.example.util.OfficialPeriod.isOfficial(it.dateString, start)
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _lastScanned = MutableStateFlow<AttendanceWithMember?>(null)
     val lastScanned: StateFlow<AttendanceWithMember?> = _lastScanned.asStateFlow()
@@ -1180,6 +1072,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _scannedMemberForCreation = MutableStateFlow<ExtractedMemberInfo?>(null)
     val scannedMemberForCreation: StateFlow<ExtractedMemberInfo?> = _scannedMemberForCreation.asStateFlow()
+
+    /** Athlete inconnu detecte : en attente d'acceptation avant ajout a la liste. */
+    private val _pendingMemberRegistration = MutableStateFlow<PendingMemberRegistration?>(null)
+    val pendingMemberRegistration: StateFlow<PendingMemberRegistration?> =
+        _pendingMemberRegistration.asStateFlow()
 
     private val _searchQuery = MutableStateFlow("")
     val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
@@ -1194,15 +1091,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // being delivered twice. Never rely on this delay as the sole protection.
     private val SCAN_DUPLICATE_WINDOW_MS = 800L
 
-    init {
-        viewModelScope.launch {
-            if (!prefs.getBoolean("has_initialized_db", false)) {
-                repository.seedInitialDataIfEmpty()
-                prefs.edit().putBoolean("has_initialized_db", true).apply()
-            }
-        }
-    }
-
     fun clearDatabase(onComplete: () -> Unit = {}) {
         viewModelScope.launch {
             repository.clearEntireDatabase()
@@ -1210,6 +1098,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _activeCheckInResult.value = null
             _lastScanned.value = null
             _scannedMemberForCreation.value = null
+            _pendingMemberRegistration.value = null
             _unassignedQrCode.value = null
             onComplete()
         }
@@ -1245,17 +1134,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         viewModelScope.launch {
             try {
-                val sessionStart = _activeSession.value?.startTimestamp
-                var result = repository.processCheckIn(clean, "QR_SCAN", sessionStart)
-                if (result is CheckInResult.UnknownQr) {
-                    result = tryAutoRegisterAndCheckIn(clean) ?: result
+                val session = _activeSession.value
+                // Categorie de la seance en cours : sert a refuser un athlete d'un autre groupe.
+                val sessionCategory = session?.let { active ->
+                    _categories.value.firstOrNull { it.id == active.categoryId }
                 }
-                // One read ⇒ exactly one feedback, one vibration, one sound.
+                val result = repository.processCheckIn(
+                    rawCode = clean,
+                    method = "QR_SCAN",
+                    sessionStartTimestamp = session?.startTimestamp,
+                    sessionCategoryName = sessionCategory?.name ?: session?.categoryName,
+                    sessionGroupCode = sessionCategory?.groupCode
+                )
+                // IMPORTANT : aucun ajout automatique d'athlete. Un code inconnu declenche
+                // une fenetre d'information a accepter (voir emitUnknownQr).
+                // One read â‡’ exactly one feedback, one vibration, one sound.
                 triggerHapticFeedback(result)
                 when (result) {
                     is CheckInResult.Success -> emitCheckInSuccess(result)
                     is CheckInResult.AlreadyCheckedIn -> emitAlreadyChecked(result)
+                    is CheckInResult.WrongCategory -> emitWrongCategory(result)
                     is CheckInResult.UnknownQr -> emitUnknownQr(clean, result)
+                    is CheckInResult.Registered -> {
+                        _activeCheckInResult.value = result
+                        _coachScanFeedback.value = CoachScanFeedback.Invalid(
+                            "Fiche crÃ©Ã©e : ${result.member.fullName}. Scannez Ã  nouveau pour pointer."
+                        )
+                    }
                     is CheckInResult.Error -> {
                         _activeCheckInResult.value = result
                         _coachScanFeedback.value = CoachScanFeedback.Invalid(result.message)
@@ -1272,42 +1177,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onIncompleteScan() {
         if (isProcessingScan) return
         _activeCheckInResult.value = null
-        _coachScanFeedback.value = CoachScanFeedback.Invalid("Lecture incomplète, veuillez rescanner")
+        _coachScanFeedback.value = CoachScanFeedback.Invalid("Lecture incomplÃ¨te, veuillez rescanner")
     }
 
     /**
-     * Unknown code carrying a full identity: create the athlete from the scanned sports
-     * card and return the check-in result for the freshly created member. Returns null
-     * when the code carries no usable identity (the manual flows are used instead).
-     */
-    private suspend fun tryAutoRegisterAndCheckIn(rawCode: String): CheckInResult? {
-        val extracted = CardDataParser.parseCardData(rawCode)
-        val hasFullName = extracted.firstName.isNotBlank() && extracted.lastName.isNotBlank()
-        if (!hasFullName) return null
-
-        val created = repository.registerMemberFromCard(rawCode) ?: return null
-        val retry = repository.processCheckIn(rawCode, "QR_SCAN", _activeSession.value?.startTimestamp)
-        return if (retry is CheckInResult.UnknownQr) {
-            CheckInResult.Error("Athlète « ${created.fullName} » enregistré, pointage à confirmer")
-        } else {
-            retry
-        }
-    }
-
-    /**
-     * No member matches the complete code: fall back to the manual flows (unassigned QR
-     * or prefilled creation dialog) and show a single "not recognised" message.
+     * No member matches the complete code: never create anything silently.
+     * A code carrying an identity opens an explicit confirmation dialog; a bare code
+     * falls back to the "associate card" dialog.
      */
     private fun emitUnknownQr(rawCode: String, result: CheckInResult.UnknownQr) {
         val extracted = CardDataParser.parseCardData(rawCode)
         if (extracted.firstName.isNotBlank() || extracted.lastName.isNotBlank()) {
-            _scannedMemberForCreation.value = extracted
+            _pendingMemberRegistration.value = PendingMemberRegistration(extracted)
+            _coachScanFeedback.value = CoachScanFeedback.Invalid(
+                "AthlÃ¨te non reconnu : validez l'ajout Ã  la liste des membres"
+            )
         } else {
             _unassignedQrCode.value = rawCode
+            _coachScanFeedback.value = CoachScanFeedback.Invalid("QR code non reconnu dans le club")
         }
         _activeCheckInResult.value = result
-        _coachScanFeedback.value = CoachScanFeedback.Invalid("QR code non reconnu dans le club")
         playScanSound(false)
+    }
+
+    /** L'utilisateur accepte : ouvre le formulaire pre-rempli (creation explicite). */
+    fun confirmPendingMemberRegistration() {
+        val pending = _pendingMemberRegistration.value ?: return
+        _pendingMemberRegistration.value = null
+        _scannedMemberForCreation.value = pending.extracted
+    }
+
+    /** L'utilisateur refuse : rien n'est cree. */
+    fun cancelPendingMemberRegistration() {
+        _pendingMemberRegistration.value = null
+        _coachScanFeedback.value = null
     }
 
     private fun emitCheckInSuccess(result: CheckInResult.Success) {
@@ -1333,8 +1236,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    private fun emitAlreadyChecked(result: CheckInResult.AlreadyCheckedIn) {
-        _activeCheckInResult.value = result
+    /**
+     * Athlete reconnu mais rattache a une AUTRE categorie : alerte explicite, aucun pointage.
+     */
+    private fun emitWrongCategory(result: CheckInResult.WrongCategory) {
+        _activeCheckInResult.value = null
+        _coachScanFeedback.value = CoachScanFeedback.WrongCategory(
+            member = result.member,
+            memberGroupLabel = GroupCodes.label(result.memberGroupCode)
+                .ifBlank { result.memberGroupCode },
+            sessionCategoryName = result.sessionCategoryName
+        )
+        playScanSound(false)
+    }
+
+    private fun emitAlreadyChecked(result: CheckInResult.AlreadyCheckedIn) {        _activeCheckInResult.value = result
         _coachScanFeedback.value = CoachScanFeedback.AlreadyChecked(
             member = result.member,
             timeString = result.existingAttendance.timeString
@@ -1353,7 +1269,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun manualCheckIn(memberId: Long) {
         viewModelScope.launch {
-            val result = repository.manualCheckIn(memberId, _activeSession.value?.startTimestamp)
+            val session = _activeSession.value
+            val sessionCategory = session?.let { active ->
+                _categories.value.firstOrNull { it.id == active.categoryId }
+            }
+            val result = repository.manualCheckIn(
+                memberId = memberId,
+                sessionStartTimestamp = session?.startTimestamp,
+                sessionCategoryName = sessionCategory?.name ?: session?.categoryName,
+                sessionGroupCode = sessionCategory?.groupCode
+            )
             triggerHapticFeedback(result)
             _activeCheckInResult.value = result
             when (result) {
@@ -1385,8 +1310,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                     playScanSound(true)
                 }
+                is CheckInResult.WrongCategory -> emitWrongCategory(result)
                 else -> {
-                    _coachScanFeedback.value = CoachScanFeedback.Invalid("Erreur lors du pointage")
+                    val message = (result as? CheckInResult.Error)?.message
+                        ?: "Erreur lors du pointage"
+                    _coachScanFeedback.value = CoachScanFeedback.Invalid(message)
                     playScanSound(false)
                 }
             }
@@ -1415,11 +1343,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun associateQrToMember(memberId: Long, qrCode: String) {
         viewModelScope.launch {
+            // RÃ¨gle : associer une carte Ã  une fiche n'est pas un pointage.
+            // Aucune prÃ©sence n'est enregistrÃ©e ici.
             repository.associateQrCodeToMember(memberId, qrCode)
             _unassignedQrCode.value = null
-            // Automatically check-in after associating!
-            val result = repository.processCheckIn(qrCode, "QR_SCAN", _activeSession.value?.startTimestamp)
-            _activeCheckInResult.value = result
         }
     }
 
@@ -1445,9 +1372,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveMember(member: Member) {
         viewModelScope.launch {
             if (member.id == 0L) {
-                val newId = repository.insertMember(member)
-                // If member was just created from card, auto check-in them for their session!
-                repository.processCheckIn(member.qrCode, "QR_SCAN", _activeSession.value?.startTimestamp)
+                // RÃ¨gle : crÃ©er une fiche n'est jamais un pointage. L'athlÃ¨te dÃ©marre
+                // Â« Absent / Non pointÃ© Â» dans toutes les sÃ©ances ; seul un scan valide
+                // le rend prÃ©sent.
+                repository.insertMember(member)
             } else {
                 repository.updateMember(member)
             }
@@ -1495,21 +1423,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun getTopAttendanceList(
         allMembersList: List<Member>,
         allAttendances: List<AttendanceWithMember>,
-        period: StatPeriod = StatPeriod.SEASON
+        period: StatPeriod = StatPeriod.SEASON,
+        officialStartDate: String = ""
     ): List<MemberAttendanceStat> {
         if (allMembersList.isEmpty()) return emptyList()
         val periodAttendances = filterAttendancesByPeriod(allAttendances, period)
+            .filter { com.example.util.OfficialPeriod.isOfficial(it.dateString, officialStartDate) }
         val attendanceCountByMember = periodAttendances.groupBy { it.memberId }
             .mapValues { it.value.size }
 
-        val maxAttendance = attendanceCountByMember.values.maxOrNull() ?: 1
-        val baselineTotal = when (period) {
-            StatPeriod.TODAY -> 1
-            StatPeriod.WEEK -> 3.coerceAtLeast(maxAttendance)
-            StatPeriod.MONTH -> 10.coerceAtLeast(maxAttendance)
-            StatPeriod.TWO_MONTHS -> 18.coerceAtLeast(maxAttendance)
-            StatPeriod.SEASON -> 30.coerceAtLeast(maxAttendance)
-        }
+        // Taux reel : nombre de jours de seance effectivement tenus sur la periode
+        // (plus de denominateur arbitraire 10 / 18 / 30).
+        val sessionsHeld = periodAttendances.map { it.dateString }.distinct().size
+        val baselineTotal = sessionsHeld.coerceAtLeast(1)
 
         return allMembersList.map { member ->
             val count = attendanceCountByMember[member.id] ?: 0

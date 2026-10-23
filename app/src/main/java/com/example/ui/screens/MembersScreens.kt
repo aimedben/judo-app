@@ -1,6 +1,5 @@
 package com.example.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -30,7 +29,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -53,16 +51,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Attendance
 import com.example.data.model.AttendanceWithMember
 import com.example.data.model.CoachProfile
+import com.example.data.model.JudoCategory
+import com.example.data.model.JudoGroup
 import com.example.data.model.Member
+import com.example.data.model.SessionStatus
 import com.example.ui.components.AddEditMemberDialog
 import com.example.ui.components.BeltBadge
 import com.example.ui.components.GroupBadge
@@ -71,6 +72,7 @@ import com.example.ui.components.MemberAttendanceCalendar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.MemberDuplicates
 
 @Composable
 fun MembersScreen(
@@ -80,6 +82,7 @@ fun MembersScreen(
     onEditCoachProfile: () -> Unit,
     onSelectMember: (Long) -> Unit,
     onSaveMember: (Member) -> Unit,
+    categories: List<JudoCategory> = emptyList(),
     modifier: Modifier = Modifier
 ) {
     var searchQuery by remember { mutableStateOf("") }
@@ -90,14 +93,43 @@ fun MembersScreen(
         todayAttendance.map { it.memberId }.toSet()
     }
 
-    val availableGroups = remember(members) {
-        members.map { it.groupCode }.filter { it.isNotBlank() }.distinct().sorted()
+    // Options de la barre de filtres : code de groupe + libellé lisible de la
+    // CATÉGORIE (et non le code brut), ordonnées selon la progression judo
+    // (Éveil → U9 → U11 → U13 → U15 → U18 → Séniors) et non par ordre alphabétique.
+    val groupFilterOptions = remember(members, categories) {
+        // Un filtre par CATEGORIE qui contient reellement des athletes.
+        // Une categorie n'est retenue que si au moins un athlete lui correspond,
+        // ce qui evite les doublons quand une ancienne categorie (libelle libre)
+        // et un code de groupe pointent sur les memes judokas.
+        val memberCodes = members.map { it.groupCode }.filter { it.isNotBlank() }
+
+        val fromCategories = categories
+            .filter { it.isActive && it.groupCode.isNotBlank() }
+            .filter { cat -> memberCodes.any { com.example.util.GroupCodes.matches(cat.groupCode, it) } }
+            .distinctBy { com.example.util.GroupCodes.canonical(it.groupCode).sorted().joinToString(",") }
+            .map { GroupFilterOption(code = it.groupCode, label = it.groupLabel) }
+
+        // Athletes dont le groupe n'est couvert par AUCUNE categorie retenue :
+        // un seul filtre de secours par code, jamais de doublon de libelle.
+        val coveredCodes = fromCategories
+            .flatMap { com.example.util.GroupCodes.canonical(it.code) }
+            .toSet()
+        val orphans = memberCodes
+            .map { it.trim().uppercase() }
+            .filter { it.isNotBlank() && it !in coveredCodes }
+            .distinct()
+            .map { GroupFilterOption(code = it, label = JudoGroup.fromString(it).label) }
+
+        (fromCategories + orphans)
+            .distinctBy { com.example.util.GroupCodes.canonical(it.code).sorted().joinToString(",") }
+            .sortedBy { JudoGroup.fromString(com.example.util.GroupCodes.canonical(it.code).first()).ordinal }
     }
 
     val filteredMembers = remember(members, searchQuery, selectedGroupFilter, presentTodayIds) {
         members
             .filter { m ->
-                selectedGroupFilter == "ALL" || m.groupCode.equals(selectedGroupFilter, ignoreCase = true)
+                selectedGroupFilter == "ALL" ||
+                    com.example.util.GroupCodes.matches(selectedGroupFilter, m.groupCode)
             }
             .filter { m ->
                 searchQuery.isBlank() ||
@@ -113,6 +145,7 @@ fun MembersScreen(
             initialMember = null,
             coachProfile = coachProfile,
             onEditCoachProfile = onEditCoachProfile,
+            findDuplicate = { candidate -> MemberDuplicates.find(members, candidate) },
             onSave = { newMember ->
                 onSaveMember(newMember)
                 isAddDialogOpen = false
@@ -162,57 +195,10 @@ fun MembersScreen(
         }
 
         item {
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = CardDefaults.outlinedCardBorder(),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(JudoGold.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.SportsMartialArts,
-                            contentDescription = null,
-                            tint = JudoGold,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = coachProfile.name,
-                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
-                        )
-                        Text(
-                            text = coachProfile.title,
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        )
-                    }
-                    IconButton(onClick = onEditCoachProfile, modifier = Modifier.testTag("members_edit_coach_btn")) {
-                        Icon(Icons.Default.Edit, contentDescription = "Modifier le profil du coach", tint = JudoRed)
-                    }
-                }
-            }
-        }
-
-        item {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Rechercher un judoka, un QR, un téléphone…") },
+                placeholder = { Text("Rechercher un judoka, QR, tél…") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true,
                 shape = RoundedCornerShape(14.dp),
@@ -222,26 +208,26 @@ fun MembersScreen(
             )
         }
 
-        if (availableGroups.size > 1) {
+        if (groupFilterOptions.size > 1) {
             item {
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     item {
                         FilterChip(
                             selected = selectedGroupFilter == "ALL",
                             onClick = { selectedGroupFilter = "ALL" },
-                            label = { Text("Tous les groupes") },
+                            label = { Text("Toutes les catégories") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = JudoRed,
                                 selectedLabelColor = Color.White
                             )
                         )
                     }
-                    items(availableGroups) { group ->
-                        val count = members.count { it.groupCode.equals(group, ignoreCase = true) }
+                    items(groupFilterOptions, key = { it.code }) { option ->
+                        val count = members.count { com.example.util.GroupCodes.matches(option.code, it.groupCode) }
                         FilterChip(
-                            selected = selectedGroupFilter == group,
-                            onClick = { selectedGroupFilter = group },
-                            label = { Text("$group ($count)") },
+                            selected = selectedGroupFilter == option.code,
+                            onClick = { selectedGroupFilter = option.code },
+                            label = { Text("${option.label} ($count)") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = JudoRed,
                                 selectedLabelColor = Color.White
@@ -280,6 +266,12 @@ fun MembersScreen(
     }
 }
 
+/** Une puce de la barre de filtres : code technique du groupe + nom lisible de la catégorie. */
+private data class GroupFilterOption(
+    val code: String,
+    val label: String
+)
+
 @Composable
 private fun MemberListRow(
     member: Member,
@@ -287,9 +279,16 @@ private fun MemberListRow(
     onClick: () -> Unit
 ) {
     Card(
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(18.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = if (isPresentToday) {
+                JudoSuccess.copy(alpha = 0.06f)
+            } else {
+                MaterialTheme.colorScheme.surface
+            }
+        ),
         border = CardDefaults.outlinedCardBorder(),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
@@ -298,63 +297,110 @@ private fun MemberListRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(12.dp),
+                .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+            horizontalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             JudokaAvatar(
                 name = member.fullName,
                 belt = member.belt,
                 photoUrl = member.photoUrl,
-                sizeDp = 48
+                sizeDp = 50
             )
 
-            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     Text(
                         text = member.fullName,
-                        style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-                        maxLines = 1
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false)
                     )
-                    if (isPresentToday) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = "Présent aujourd'hui",
-                            tint = JudoSuccess,
-                            modifier = Modifier.size(16.dp)
-                        )
+                    if (member.status == "SUSPENDU") {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = JudoRed.copy(alpha = 0.12f)
+                        ) {
+                            Text(
+                                text = "Suspendu",
+                                color = JudoRed,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     BeltBadge(belt = member.belt)
                     GroupBadge(group = member.group)
                 }
-            }
 
-            if (member.status == "SUSPENDU") {
-                Surface(
-                    shape = RoundedCornerShape(6.dp),
-                    color = JudoRed.copy(alpha = 0.12f)
-                ) {
-                    Text(
-                        text = "Suspendu",
-                        color = JudoRed,
-                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                    )
+                if (member.phone.isNotBlank()) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Phone,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            modifier = Modifier.size(12.dp)
+                        )
+                        Text(
+                            text = member.phone,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            ),
+                            maxLines = 1
+                        )
+                    }
                 }
             }
 
-            Icon(
-                imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
-                modifier = Modifier.size(18.dp)
-            )
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                if (isPresentToday) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = JudoSuccess.copy(alpha = 0.14f)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = null,
+                                tint = JudoSuccess,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = "Présent",
+                                color = JudoSuccess,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
+                    }
+                }
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "Ouvrir la fiche",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -364,6 +410,8 @@ fun MemberDetailScreen(
     member: Member,
     attendanceList: List<Attendance>,
     allClubAttendances: List<AttendanceWithMember>,
+    scheduledSessions: List<com.example.data.model.ScheduledTrainingSession> = emptyList(),
+    officialStartDate: String = "",
     onBack: () -> Unit,
     onManualCheckIn: (Long) -> Unit,
     onRecordAttendanceForDate: (Long, String) -> Unit,
@@ -374,9 +422,36 @@ fun MemberDetailScreen(
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
 
-    val totalAttendances = attendanceList.size
-    val clubDistinctDays = remember(allClubAttendances) {
-        allClubAttendances.map { it.dateString }.distinct().size
+    val totalAttendances = remember(attendanceList, officialStartDate) {
+        // Presences comptees uniquement depuis la date de debut du pointage officiel.
+        attendanceList.count { com.example.util.OfficialPeriod.isOfficial(it.dateString, officialStartDate) }
+    }
+    // Jours d'entrainement repris du planning admin > seances (categorie de l'athlete),
+    // pour que l'agenda de la fiche affiche les vrais jours.
+    val trainingSlots = remember(scheduledSessions, member) {
+        scheduledSessions
+            .filter { it.status != SessionStatus.CANCELLED }
+            .filter { s ->
+                com.example.util.GroupCodes.matches(s.groupCode, member.groupCode) ||
+                    s.categoryName.equals(member.group.name, ignoreCase = true)
+            }
+            .map {
+                com.example.ui.components.TrainingSlot(
+                    dayOfWeekName = it.dayOfWeekName,
+                    startTime = it.startTime,
+                    endTime = it.endTime,
+                    categoryName = it.categoryName
+                )
+            }
+            .distinctBy { "${it.dayOfWeekName}|${it.startTime}".lowercase() }
+            .sortedBy { it.calendarDayOfWeek ?: 7 }
+    }
+    val clubDistinctDays = remember(allClubAttendances, officialStartDate) {
+        // Seules les dates dans la periode de pointage officiel comptent.
+        allClubAttendances
+            .map { it.dateString }
+            .distinct()
+            .count { com.example.util.OfficialPeriod.isOfficial(it, officialStartDate) }
     }
     val attendanceRate = if (clubDistinctDays > 0) {
         ((totalAttendances.toDouble() / clubDistinctDays.toDouble()) * 100).toInt().coerceIn(0, 100)
@@ -574,6 +649,8 @@ fun MemberDetailScreen(
                 member = member,
                 attendanceList = attendanceList,
                 allClubAttendances = allClubAttendances,
+                trainingSlots = trainingSlots,
+                officialStartDate = officialStartDate,
                 onRecordAttendanceForDate = onRecordAttendanceForDate,
                 onDeleteAttendanceForDate = onDeleteAttendanceForDate
             )

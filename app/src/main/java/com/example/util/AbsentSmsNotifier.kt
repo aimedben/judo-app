@@ -1,8 +1,6 @@
 package com.example.util
 
 import com.example.data.model.Member
-import java.util.Calendar
-import java.util.GregorianCalendar
 import java.util.Locale
 
 /**
@@ -22,16 +20,7 @@ import java.util.Locale
 object AbsentSmsNotifier {
 
     /** Club label used when the club name is not configured (fallback). */
-    const val DEFAULT_CLUB_LABEL = "le club"
-
-    private val DAYS_FR = arrayOf(
-        "dimanche", "lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi"
-    )
-
-    private val MONTHS_FR = arrayOf(
-        "janvier", "février", "mars", "avril", "mai", "juin",
-        "juillet", "août", "septembre", "octobre", "novembre", "décembre"
-    )
+    const val DEFAULT_CLUB_LABEL = "Judo Club Seddouk"
 
     /** Why a given absent athlete was left out of the SMS preparation. */
     enum class SkipReason {
@@ -160,10 +149,13 @@ object AbsentSmsNotifier {
         return categoryMembers.filter { it.fullName.trim().lowercase(Locale.ROOT) in wanted }
     }
 
-    /** Members of a category, matched on the category's group code (case-insensitive). */
+    /**
+     * Members of a category, matched on the category's group code (case-insensitive).
+     * A category can cover several groups: "Cadets, Juniors & Seniors" stores "U18,SENIOR".
+     */
     fun membersOfGroup(members: List<Member>, groupCode: String?): List<Member> {
         if (groupCode.isNullOrBlank()) return emptyList()
-        return members.filter { it.groupCode.equals(groupCode, ignoreCase = true) }
+        return members.filter { GroupCodes.matches(groupCode, it.groupCode) }
     }
 
     /**
@@ -203,50 +195,48 @@ object AbsentSmsNotifier {
     }
 
     /**
-     * Formats an ISO date (`"2026-10-17"`) into a human French label (`"samedi 17 octobre 2026"`).
-     * Falls back to the raw value when it cannot be parsed, so the message is always usable.
+     * Formats the session start time ("17:30") into the "17h30" wording of the message.
+     * Null when the session has no start time.
      */
-    fun formatSessionDate(dateString: String): String {
-        val trimmed = dateString.trim()
-        val match = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$").find(trimmed) ?: return trimmed
-        val year = match.groupValues[1].toIntOrNull() ?: return trimmed
-        val month = match.groupValues[2].toIntOrNull() ?: return trimmed
-        val day = match.groupValues[3].toIntOrNull() ?: return trimmed
-        if (month !in 1..12 || day !in 1..31) return trimmed
-
-        return try {
-            val calendar = GregorianCalendar(year, month - 1, day)
-            val dayName = DAYS_FR[calendar.get(Calendar.DAY_OF_WEEK) - 1]
-            "$dayName $day ${MONTHS_FR[month - 1]} $year"
-        } catch (_: Exception) {
-            trimmed
-        }
+    fun formatSessionClock(start: String?): String? {
+        val value = start?.trim().orEmpty()
+        val match = Regex("^(\\d{1,2})[:hH.](\\d{2})$").find(value) ?: return null
+        val hour = match.groupValues[1].toIntOrNull() ?: return null
+        return if (hour in 0..23) "${match.groupValues[1]}h${match.groupValues[2]}" else null
     }
 
     /**
      * Builds the personalised message for one guardian.
      *
-     * Template: "Bonjour, nous vous informons que votre enfant {nom_athlete} était absent à la
-     * séance de judo du {date_seance}. Pour toute information, veuillez contacter le club. Merci."
+     * Official club template; the session date (dd/MM/yyyy) and time (HHhMM) are recovered
+     * automatically from the session. The athlete name is always the one of the child whose
+     * number is being messaged: each recipient gets their own message built from their own
+     * absent athlete — never from another athlete's name.
      *
-     * Fallbacks: when [clubName] is blank the generic wording "le club" is used; when the session
-     * date cannot be formatted its raw value is kept; when the athlete name is blank a neutral
-     * wording is used.
+     * Fallbacks: an unparseable date keeps its raw value, a missing start time is omitted,
+     * and a blank [clubName] falls back to the club's default label.
      */
     fun buildMessage(
         memberName: String,
         sessionDate: String,
+        sessionStart: String? = null,
         clubName: String? = null
     ): String {
         val name = memberName.trim().ifBlank { "votre enfant" }
-        // Lower-cased because the date sits mid-sentence ("du …"); the ISO form is already
-        // lower-case, and this also tames legacy/seed dates stored as "Samedi 4 Octobre 2026".
-        val dateLabel = formatSessionDate(sessionDate).replaceFirstChar { it.lowercase(Locale.ROOT) }
-        val club = clubName?.trim().orEmpty()
-        val clubLabel = if (club.isBlank()) DEFAULT_CLUB_LABEL else "le club ($club)"
+        // Slash date (dd/MM/yyyy), as written on the club's letter.
+        val dateLabel = Regex("^(\\d{4})-(\\d{2})-(\\d{2})$").find(sessionDate.trim())
+            ?.let { "${it.groupValues[3]}/${it.groupValues[2]}/${it.groupValues[1]}" }
+            ?: sessionDate.trim()
+        val clockLabel = formatSessionClock(sessionStart)?.let { " à $it" }.orEmpty()
+        val club = clubName?.trim().orEmpty().ifBlank { DEFAULT_CLUB_LABEL }
 
-        return "Bonjour, nous vous informons que votre enfant $name était absent à la séance " +
-            "de judo du $dateLabel. Pour toute information, veuillez contacter $clubLabel. Merci."
+        return "Bonjour,\n" +
+            "Madame, Monsieur,\n" +
+            "Nous vous informons que votre enfant $name ne s'est pas présenté(e) à la séance " +
+            "d'entraînement de ce jour le $dateLabel$clockLabel et, par conséquent, " +
+            "n'a pas été enregistré(e) sur notre système de pointage.\n" +
+            "Cordialement,\n" +
+            "L'administration du $club"
     }
 
     /** Transport format used by the `smsto:` URI (keeps the national form, digits only). */
