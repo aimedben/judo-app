@@ -1,10 +1,11 @@
-﻿package com.example.data.sync
+package com.example.data.sync
 
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import com.example.data.local.AppDatabase
+import com.example.data.local.face.FaceDatabase
 import com.example.data.local.CategoryEntity
 import com.example.data.local.CoachEntity
 import com.example.data.local.PastSessionEntity
@@ -83,8 +84,8 @@ class SupabaseSyncService(
     private var autoSyncJob: Job? = null
 
     /**
-     * DÃ©clenche une synchronisation automatique en arriÃ¨re-plan lorsque la connexion est active,
-     * Ã©vitant la perte de donnÃ©es en cas de fermeture inattendue.
+     * Déclenche une synchronisation automatique en arrière-plan lorsque la connexion est active,
+     * évitant la perte de données en cas de fermeture inattendue.
      */
     fun triggerBackgroundAutoSync() {
         if (_config.value.isAutoSyncEnabled && isOnline() && !_isSyncing.value) {
@@ -112,7 +113,7 @@ class SupabaseSyncService(
             isAutoSyncEnabled = prefs.getBoolean("supabase_auto_sync", true),
             isDaily22hSyncEnabled = prefs.getBoolean("supabase_daily_22h_sync", true),
             lastSyncTimestamp = prefs.getLong("supabase_last_sync_timestamp", 0L),
-            lastSyncStatus = prefs.getString("supabase_last_sync_status", "CONFIGURÃ‰") ?: "CONFIGURÃ‰"
+            lastSyncStatus = prefs.getString("supabase_last_sync_status", "CONFIGURÉ") ?: "CONFIGURÉ"
         )
     }
 
@@ -143,7 +144,7 @@ class SupabaseSyncService(
     suspend fun testConnection(): Result<String> = withContext(Dispatchers.IO) {
         val cfg = _config.value
         if (!cfg.isConfigured) {
-            return@withContext Result.failure(Exception("URL ou ClÃ© API Supabase non renseignÃ©e"))
+            return@withContext Result.failure(Exception("URL ou Clé API Supabase non renseignée"))
         }
         if (!isOnline()) {
             return@withContext Result.failure(Exception("Aucune connexion Internet disponible sur la tablette"))
@@ -165,13 +166,13 @@ class SupabaseSyncService(
                     val localMembers = runCatching { memberDao.countMembers() }.getOrDefault(0)
                     val detail = buildString {
                         if (cloudMembers != null) {
-                            append("Cloud : $cloudMembers athlÃ¨tes")
+                            append("Cloud : $cloudMembers athlètes")
                             if (cloudCoaches != null) append(", $cloudCoaches coachs")
-                            if (cloudSessions != null) append(", $cloudSessions crÃ©neaux")
-                            append(" â€¢ Tablette : $localMembers athlÃ¨tes")
+                            if (cloudSessions != null) append(", $cloudSessions créneaux")
+                            append(" • Tablette : $localMembers athlètes")
                         }
                     }
-                    val base = "Connexion Ã  Supabase rÃ©ussie (HTTP ${response.code})"
+                    val base = "Connexion à Supabase réussie (HTTP ${response.code})"
                     Result.success(if (detail.isBlank()) base else "$base\n$detail")
                 } else {
                     Result.failure(Exception("Erreur de connexion Supabase (Code HTTP ${response.code})"))
@@ -554,11 +555,11 @@ class SupabaseSyncService(
                                 entityName = op.entityType,
                                 entityId = op.entityId,
                                 operationType = op.operation,
-                                details = "SupprimÃ© de la table $table"
+                                details = "Supprimé de la table $table"
                             )
                         )
                     } else {
-                        val errMsg = "Suppression non appliquÃ©e cÃ´tÃ© cloud sur $table (ligne toujours prÃ©sente)"
+                        val errMsg = "Suppression non appliquée côté cloud sur $table (ligne toujours présente)"
                         syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
                         if (syncError == null) syncError = errMsg
                     }
@@ -572,7 +573,7 @@ class SupabaseSyncService(
                     preparePayloadForPush(cfg, op.entityType, op.payloadJson)
                 }
                 if (!prepared.ok) {
-                    val errMsg = "Photo non tÃ©lÃ©versÃ©e vers Supabase Storage"
+                    val errMsg = "Photo non téléversée vers Supabase Storage"
                     syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
                     if (syncError == null) syncError = errMsg
                     continue
@@ -588,11 +589,11 @@ class SupabaseSyncService(
                             entityName = op.entityType,
                             entityId = op.entityId,
                             operationType = op.operation,
-                            details = "SynchronisÃ© avec succÃ¨s vers table $table"
+                            details = "Synchronisé avec succès vers table $table"
                         )
                     )
                 } else {
-                    val errMsg = "RÃ©ponse serveur non-2xx sur la table $table"
+                    val errMsg = "Réponse serveur non-2xx sur la table $table"
                     syncQueueDao.markError(op.id, SyncStatus.PENDING.name, errMsg)
                     if (syncError == null) syncError = errMsg
                 }
@@ -611,7 +612,7 @@ class SupabaseSyncService(
         if (_isSyncing.value) {
             return@withContext SyncReport(
                 isSuccess = false,
-                errorMessage = "Une synchronisation est dÃ©jÃ  en cours. Veuillez patienter.",
+                errorMessage = "Une synchronisation est déjà en cours. Veuillez patienter.",
                 pendingRemaining = syncQueueDao.countPendingOperationsDirect()
             )
         }
@@ -620,7 +621,7 @@ class SupabaseSyncService(
         if (!cfg.isConfigured) {
             return@withContext SyncReport(
                 isSuccess = false,
-                errorMessage = "Supabase non configurÃ© (renseignez l'URL et la clÃ© anon dans les paramÃ¨tres)",
+                errorMessage = "Supabase non configuré (renseignez l'URL et la clé anon dans les paramètres)",
                 pendingRemaining = syncQueueDao.countPendingOperationsDirect()
             )
         }
@@ -628,7 +629,7 @@ class SupabaseSyncService(
         if (!isOnline()) {
             return@withContext SyncReport(
                 isSuccess = false,
-                errorMessage = "Aucune connexion Internet disponible sur la tablette. Les donnÃ©es restent conservÃ©es localement.",
+                errorMessage = "Aucune connexion Internet disponible sur la tablette. Les données restent conservées localement.",
                 pendingRemaining = syncQueueDao.countPendingOperationsDirect()
             )
         }
@@ -643,7 +644,7 @@ class SupabaseSyncService(
             try {
                 // Ordering matters both ways:
                 // - Queue EMPTY (fresh start): pull FIRST so the cloud fills the local
-                //   tables before anything is pushed â€” pushing a brand-new Room database
+                //   tables before anything is pushed — pushing a brand-new Room database
                 //   used to shadow real cloud rows with whatever a fresh install contained.
                 // - Queue NON-EMPTY: push FIRST, so cloud DELETEs (tombstones) land before
                 //   the pull runs; a pull executed first would re-add rows whose deletion
@@ -693,7 +694,7 @@ class SupabaseSyncService(
                 if (isSuccess) {
                     prefs.edit()
                         .putLong("supabase_last_sync_timestamp", now)
-                        .putString("supabase_last_sync_status", "SYNCHRONISÃ‰")
+                        .putString("supabase_last_sync_status", "SYNCHRONISÉ")
                         .apply()
                     _config.value = loadConfig()
                 }
@@ -705,8 +706,8 @@ class SupabaseSyncService(
                     conflictsResolved = conflictsResolved,
                     errorMessage = if (!isSuccess) {
                         buildString {
-                            append(syncError ?: "Certains Ã©lÃ©ments n'ont pas pu Ãªtre synchronisÃ©s.")
-                            if (remaining > 0) append(" â€” $remaining opÃ©ration(s) encore en attente")
+                            append(syncError ?: "Certains éléments n'ont pas pu être synchronisés.")
+                            if (remaining > 0) append(" — $remaining opération(s) encore en attente")
                         }
                     } else null,
                     pendingRemaining = remaining,
@@ -1346,7 +1347,15 @@ class SupabaseSyncService(
                         val complete = total == null || total == arr.length()
                         if (complete && syncQueueDao.countPendingForType("MEMBERS") == 0) {
                             val stale = memberDao.getAllMembersDirect().filterNot { it.id in remoteIds }
-                            stale.forEach { memberDao.deleteMember(it) }
+                            stale.forEach {
+                                memberDao.deleteMember(it)
+                                // Cascade : les empreintes faciales d'un athlete disparu du cloud
+                                // ne doivent jamais rester sur la tablette.
+                                runCatching {
+                                    FaceDatabase.getInstance(context).faceTemplateDao()
+                                        .deleteForMember(it.id)
+                                }
+                            }
                             if (stale.isNotEmpty()) {
                                 Log.i("SupabaseSync", "Removed ${stale.size} member(s) absent from cloud")
                             }
@@ -1560,7 +1569,7 @@ class SupabaseSyncService(
         try {
             val root = JSONObject(backupJson)
             if (!root.has("members") && !root.has("categories")) {
-                return@withContext Result.failure(Exception("Format de sauvegarde JSON invalide (clÃ©s attendues manquantes)"))
+                return@withContext Result.failure(Exception("Format de sauvegarde JSON invalide (clés attendues manquantes)"))
             }
 
             // Restore Members
@@ -1618,7 +1627,7 @@ class SupabaseSyncService(
                     val obj = arr.getJSONObject(i)
                     val cat = CategoryEntity(
                         id = obj.optString("id", UUID.randomUUID().toString()),
-                        name = obj.optString("name", "CatÃ©gorie"),
+                        name = obj.optString("name", "Catégorie"),
                         groupCode = obj.optString("group_code", "U15"),
                         coach1Name = obj.optString("coach1_name", ""),
                         coach2Name = obj.optString("coach2_name", ""),
@@ -1636,13 +1645,13 @@ class SupabaseSyncService(
                     entityName = "ALL",
                     entityId = "BACKUP_RESTORE",
                     operationType = "BACKUP_RESTORE",
-                    details = "Restauration terminÃ©e : $restoredMembers membres, $restoredAttendances prÃ©sences, $restoredCategories catÃ©gories"
+                    details = "Restauration terminée : $restoredMembers membres, $restoredAttendances présences, $restoredCategories catégories"
                 )
             )
 
-            Result.success("Restauration rÃ©ussie : $restoredMembers adhÃ©rents, $restoredAttendances pointages rÃ©intÃ©grÃ©s.")
+            Result.success("Restauration réussie : $restoredMembers adhérents, $restoredAttendances pointages réintégrés.")
         } catch (e: Exception) {
-            Result.failure(Exception("Ã‰chec de la restauration : ${e.message}"))
+            Result.failure(Exception("Échec de la restauration : ${e.message}"))
         }
     }
 

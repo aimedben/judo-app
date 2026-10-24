@@ -83,10 +83,12 @@ fun MembersScreen(
     onSelectMember: (Long) -> Unit,
     onSaveMember: (Member) -> Unit,
     categories: List<JudoCategory> = emptyList(),
+    searchQuery: String = "",
+    onSearchQueryChange: (String) -> Unit = {},
+    selectedGroupFilter: String = "ALL",
+    onSelectedGroupFilterChange: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
-    var searchQuery by remember { mutableStateOf("") }
-    var selectedGroupFilter by remember { mutableStateOf("ALL") }
     var isAddDialogOpen by remember { mutableStateOf(false) }
 
     val presentTodayIds = remember(todayAttendance) {
@@ -197,7 +199,7 @@ fun MembersScreen(
         item {
             OutlinedTextField(
                 value = searchQuery,
-                onValueChange = { searchQuery = it },
+                onValueChange = onSearchQueryChange,
                 placeholder = { Text("Rechercher un judoka, QR, tél…") },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 singleLine = true,
@@ -214,7 +216,7 @@ fun MembersScreen(
                     item {
                         FilterChip(
                             selected = selectedGroupFilter == "ALL",
-                            onClick = { selectedGroupFilter = "ALL" },
+                            onClick = { onSelectedGroupFilterChange("ALL") },
                             label = { Text("Toutes les catégories") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = JudoRed,
@@ -226,7 +228,7 @@ fun MembersScreen(
                         val count = members.count { com.example.util.GroupCodes.matches(option.code, it.groupCode) }
                         FilterChip(
                             selected = selectedGroupFilter == option.code,
-                            onClick = { selectedGroupFilter = option.code },
+                            onClick = { onSelectedGroupFilterChange(option.code) },
                             label = { Text("${option.label} ($count)") },
                             colors = FilterChipDefaults.filterChipColors(
                                 selectedContainerColor = JudoRed,
@@ -305,7 +307,7 @@ private fun MemberListRow(
                 name = member.fullName,
                 belt = member.belt,
                 photoUrl = member.photoUrl,
-                sizeDp = 50
+                sizeDp = 58
             )
 
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -410,6 +412,7 @@ fun MemberDetailScreen(
     member: Member,
     attendanceList: List<Attendance>,
     allClubAttendances: List<AttendanceWithMember>,
+    categories: List<JudoCategory> = emptyList(),
     scheduledSessions: List<com.example.data.model.ScheduledTrainingSession> = emptyList(),
     officialStartDate: String = "",
     onBack: () -> Unit,
@@ -421,6 +424,11 @@ fun MemberDetailScreen(
     modifier: Modifier = Modifier
 ) {
     var showDeleteDialog by remember { mutableStateOf(false) }
+
+    // Nom officiel de la categorie de l'athlete (parametrage admin > categories).
+    val categoryName = remember(categories, member) {
+        categories.firstOrNull { it.covers(member.groupCode) }?.name.orEmpty()
+    }
 
     val totalAttendances = remember(attendanceList, officialStartDate) {
         // Presences comptees uniquement depuis la date de debut du pointage officiel.
@@ -536,6 +544,20 @@ fun MemberDetailScreen(
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 BeltBadge(belt = member.belt)
                                 GroupBadge(group = member.group)
+                            }
+                            if (categoryName.isNotBlank()) {
+                                Surface(
+                                    shape = RoundedCornerShape(6.dp),
+                                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
+                                    modifier = Modifier.testTag("member_category_badge")
+                                ) {
+                                    Text(
+                                        text = categoryName,
+                                        color = MaterialTheme.colorScheme.secondary,
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                    )
+                                }
                             }
                             Surface(
                                 shape = RoundedCornerShape(6.dp),

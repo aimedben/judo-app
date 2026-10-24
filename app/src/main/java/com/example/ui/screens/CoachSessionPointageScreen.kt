@@ -3,9 +3,11 @@ package com.example.ui.screens
  
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
@@ -15,6 +17,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -62,6 +66,7 @@ import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -83,6 +88,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -92,12 +100,20 @@ import com.example.data.model.ActiveTrainingSession
 import com.example.data.model.AttendanceWithMember
 import com.example.data.model.Belt
 import com.example.data.model.CoachScanFeedback
+import com.example.data.model.FaceDecision
 import com.example.data.model.Member
+import com.example.data.model.PointageMode
 import com.example.ui.components.AbsentSmsDialog
+import com.example.ui.components.FaceCameraPreview
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.example.util.DouchetteReceiver
+import com.example.util.face.FaceAnalyzer
+import com.example.util.face.FaceEngine
+import com.example.util.face.FaceObservation
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -117,6 +133,91 @@ import java.util.Locale
  * Recent check-ins list.
  * Finish session button.
  */
+/**
+ * Puce de selection de mode de pointage : remplie quand active, contournee sinon.
+ * Cible tactile 52 dp, legende icone + texte (convention Material : jamais icône seule).
+ */
+@Composable
+private fun PointageModeChip(
+    label: String,
+    icon: ImageVector,
+    active: Boolean,
+    activeColor: Color,
+    testTag: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    if (active) {
+        Button(
+            onClick = onClick,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = activeColor,
+                contentColor = Color.White
+            ),
+            shape = RoundedCornerShape(14.dp),
+            modifier = modifier
+                .height(52.dp)
+                .testTag(testTag)
+        ) {
+            ModeChipContent(label, icon, contentColor = Color.White, active = true)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            shape = RoundedCornerShape(14.dp),
+            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ),
+            modifier = modifier
+                .height(52.dp)
+                .testTag(testTag)
+        ) {
+            ModeChipContent(
+                label,
+                icon,
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                active = false
+            )
+        }
+    }
+}
+
+@Composable
+private fun ModeChipContent(
+    label: String,
+    icon: ImageVector,
+    contentColor: Color,
+    active: Boolean
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = contentColor,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = label,
+            style = MaterialTheme.typography.titleSmall.copy(
+                fontWeight = FontWeight.Bold,
+                color = contentColor
+            )
+        )
+        if (active) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Sélectionné",
+                tint = contentColor,
+                modifier = Modifier.size(14.dp)
+            )
+        }
+    }
+}
+
 @Composable
 fun CoachSessionPointageScreen(
     session: ActiveTrainingSession,
@@ -133,6 +234,7 @@ fun CoachSessionPointageScreen(
      * Le ViewModel retrouve ensuite le judoka avec ce numéro.
      */
     onNumeroScanned: (String?) -> Unit = {},
+    faceGallery: Map<Long, List<FloatArray>> = emptyMap(),
     modifier: Modifier = Modifier
 ) {
     val totalCount = categoryMembers.size
@@ -142,6 +244,80 @@ fun CoachSessionPointageScreen(
  
     var isManualCheckInDialogOpen by remember { mutableStateOf(false) }
     var statDetailMode by remember { mutableStateOf<StatDetailMode?>(null) }
+
+    // Mode de pointage de la seance : le VISAGE est le mode par defaut. La douchette et la
+    // camera QR restent accessibles en un tap via les boutons de mode.
+    val context = LocalContext.current
+    var pointageMode by remember(session.categoryId, session.startTimestamp) {
+        mutableStateOf(PointageMode.FACE)
+    }
+    val isFaceMode = pointageMode == PointageMode.FACE
+    // La permission est remontee par l'apercu camera : le moteur n'est "actif" que si
+    // modele + hash valides, permission accordee et galerie du groupe non vide.
+    var cameraGranted by remember { mutableStateOf(false) }
+    val faceStatus = remember(faceGallery.size, cameraGranted) {
+        FaceEngine.status(context, cameraGranted, faceGallery.size)
+    }
+
+    // Analyse temps reel : creee uniquement en mode Visage quand le moteur est actif.
+    var analyzer by remember { mutableStateOf<FaceAnalyzer?>(null) }
+    var observation by remember { mutableStateOf<FaceObservation?>(null) }
+    var pendingFaceMember by remember { mutableStateOf<Member?>(null) }
+
+    // Halo "visage detecte" : chaque passage vide->visage allume un anneau vert durant 2 s.
+    var faceDetectedGlow by remember { mutableStateOf(false) }
+    val faceDetectedNow = observation?.faceDetected == true
+    LaunchedEffect(faceDetectedNow) {
+        if (faceDetectedNow) {
+            faceDetectedGlow = true
+            delay(2000L)
+            faceDetectedGlow = false
+        }
+    }
+    val glowWidth by animateFloatAsState(
+        targetValue = if (faceDetectedGlow) 4f else 2f,
+        label = "face_glow_width"
+    )
+    val glowScale by animateFloatAsState(
+        targetValue = if (faceDetectedGlow) 1.05f else 1f,
+        label = "face_glow_scale"
+    )
+    val glowColor by animateColorAsState(
+        targetValue = if (faceDetectedGlow) JudoSuccess else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
+        label = "face_glow_color"
+    )
+
+    LaunchedEffect(isFaceMode, faceStatus.ready, faceGallery) {
+        analyzer?.close()
+        analyzer = null
+        observation = null
+        if (isFaceMode && faceStatus.ready) {
+            val embedder = withContext(Dispatchers.Default) { FaceEngine.embedder(context) }
+            analyzer = embedder?.let { engine ->
+                FaceAnalyzer(
+                    embedder = engine,
+                    initialGallery = faceGallery,
+                    onResult = { result ->
+                        observation = result
+                        // autoCheckInEnabled = false : meme "certain", rien n'est pointe
+                        // sans confirmation explicite du coach.
+                        if (result.decision is FaceDecision.Certain && pendingFaceMember == null) {
+                            pendingFaceMember = categoryMembers.firstOrNull {
+                                it.id == (result.decision as FaceDecision.Certain).memberId
+                            }
+                        }
+                    }
+                )
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            analyzer?.close()
+            analyzer = null
+        }
+    }
  
     // Résultat réellement affiché à l'écran.
     // - QR invalide : aucun message, on reste sur "Prêt à scanner".
@@ -176,8 +352,8 @@ fun CoachSessionPointageScreen(
     // Mode douchette HID : la douchette "tape" le QR comme un clavier puis envoie Entrée.
     val scanBuffer = remember { StringBuilder() }
     val focusRequester = remember { FocusRequester() }
-    LaunchedEffect(session.isExternalScannerMode, isManualCheckInDialogOpen) {
-        if (session.isExternalScannerMode && !isManualCheckInDialogOpen) {
+    LaunchedEffect(pointageMode, isManualCheckInDialogOpen) {
+        if (pointageMode == PointageMode.DOUCHETTE && !isManualCheckInDialogOpen) {
             runCatching { focusRequester.requestFocus() }
         }
     }
@@ -186,10 +362,10 @@ fun CoachSessionPointageScreen(
         modifier = modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
+            .padding(12.dp)
             .testTag("coach_pointage_screen")
             .then(
-                if (session.isExternalScannerMode) {
+                if (pointageMode == PointageMode.DOUCHETTE) {
                     Modifier
                         .focusRequester(focusRequester)
                         .focusable()
@@ -221,7 +397,7 @@ fun CoachSessionPointageScreen(
                         }
                 } else Modifier
             ),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         // Top Header: Category & Start Time
         Card(
@@ -335,14 +511,16 @@ fun CoachSessionPointageScreen(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 20.dp, horizontal = 16.dp),
+                    .padding(vertical = 14.dp, horizontal = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 // Radar Animation
                 ConcentricRipplesRadar(
-                    isScanning = shownFeedback == null,
-                    accentColor = when (shownFeedback) {
+                    isScanning = shownFeedback == null && !isFaceMode,
+                    accentColor = if (isFaceMode) {
+                        Color(0xFF1976D2)
+                    } else when (shownFeedback) {
                         is CoachScanFeedback.Success -> JudoSuccess
                         is CoachScanFeedback.AlreadyChecked -> Color(0xFF1976D2)
                         is CoachScanFeedback.Invalid -> MaterialTheme.colorScheme.error
@@ -440,19 +618,48 @@ fun CoachSessionPointageScreen(
                             }
                         }
                         null -> {
-                            Box(
-                                modifier = Modifier
-                                    .size(54.dp)
-                                    .clip(CircleShape)
-                                    .background(JudoRed),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.QrCodeScanner,
-                                    contentDescription = "QR Code",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(30.dp)
-                                )
+                            if (isFaceMode) {
+                                // Mode Visage : apercu camera (PiP) avec halo qui s'allume
+                                // 2 s a chaque detection de visage. Aucune frame analyse
+                                // sans modele installe.
+                                Box(
+                                    modifier = Modifier
+                                        .size(156.dp)
+                                        .graphicsLayer {
+                                            scaleX = glowScale
+                                            scaleY = glowScale
+                                        }
+                                        .border(
+                                            width = glowWidth.dp,
+                                            color = glowColor,
+                                            shape = CircleShape
+                                        )
+                                        .clip(CircleShape)
+                                ) {
+                                    FaceCameraPreview(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .clip(CircleShape)
+                                            .testTag("face_camera_preview"),
+                                        analyzer = analyzer,
+                                        onPermissionChanged = { cameraGranted = it }
+                                    )
+                                }
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(54.dp)
+                                        .clip(CircleShape)
+                                        .background(JudoRed),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.QrCodeScanner,
+                                        contentDescription = "QR Code",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(30.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -588,26 +795,57 @@ fun CoachSessionPointageScreen(
                                 // Aucun message : un QR invalide est ignoré silencieusement.
                             }
                             null -> {
-                                Text(
-                                    text = if (session.isExternalScannerMode) "Douchette prête" else "Prêt à scanner",
-                                    style = MaterialTheme.typography.titleLarge.copy(
-                                        fontWeight = FontWeight.Black,
-                                        letterSpacing = 0.5.sp
-                                    ),
-                                    color = MaterialTheme.colorScheme.onBackground
-                                )
-                                Text(
-                                    text = if (session.isExternalScannerMode) {
-                                        "Scannez le QR code de l’athlète avec la douchette HID (Bluetooth ou USB)"
-                                    } else {
-                                        "Présentez le QR code de l’athlète devant la caméra"
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium.copy(
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    ),
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.padding(horizontal = 16.dp)
-                                )
+                                if (isFaceMode) {
+                                    Text(
+                                        text = "Mode visage",
+                                        style = MaterialTheme.typography.titleLarge.copy(
+                                            fontWeight = FontWeight.Black,
+                                            letterSpacing = 0.5.sp
+                                        ),
+                                        color = MaterialTheme.colorScheme.onBackground
+                                    )
+                                    Text(
+                                        text = when {
+                                            !faceStatus.ready -> faceStatus.reason
+                                            observation?.hint != null -> observation!!.hint!!
+                                            else -> "Présentez votre visage à la caméra"
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        ),
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
+                                    Text(
+                                        text = "Aucune photo n'est conservée : seules des empreintes chiffrées restent sur cette tablette.",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                                        ),
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
+                                } else {
+                                    Text(
+                                        text = if (pointageMode == PointageMode.DOUCHETTE) "Douchette prête" else "Prêt à scanner",
+                                        style = MaterialTheme.typography.titleLarge.copy(
+                                            fontWeight = FontWeight.Black,
+                                            letterSpacing = 0.5.sp
+                                        ),
+                                        color = MaterialTheme.colorScheme.onBackground
+                                    )
+                                    Text(
+                                        text = if (pointageMode == PointageMode.DOUCHETTE) {
+                                            "Scannez le QR code de l’athlète avec la douchette HID (Bluetooth ou USB)"
+                                        } else {
+                                            "Présentez le QR code de l’athlète devant la caméra"
+                                        },
+                                        style = MaterialTheme.typography.bodyMedium.copy(
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        ),
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.padding(horizontal = 16.dp)
+                                    )
+                                }
                             }
                         }
                     }
@@ -615,92 +853,89 @@ fun CoachSessionPointageScreen(
             }
         }
  
-        // Actions Row: "Scanner avec caméra" & "Pointage manuel"
+        // Actions Row: selecteur de mode (Visage par defaut | Camera | Douchette) + manuel.
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Button(
-                onClick = onOpenScanner,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = JudoRed,
-                    contentColor = Color.White
-                ),
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier
-                    .weight(1.3f)
-                    .height(52.dp)
-                    .testTag("coach_scan_judoka_btn")
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PhotoCamera,
-                        contentDescription = null,
-                        tint = Color.White,
-                        modifier = Modifier.size(20.dp)
-                    )
-                    Text(
-                        text = "Caméra (option)",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontWeight = FontWeight.Bold
-                        )
-                    )
-                }
-            }
- 
-            OutlinedButton(
-                onClick = { isManualCheckInDialogOpen = true },
-                shape = RoundedCornerShape(14.dp),
-                border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline),
-                modifier = Modifier
-                    .weight(1f)
-                    .height(52.dp)
-                    .testTag("coach_manual_checkin_btn")
-            ) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PersonAdd,
-                        contentDescription = null,
-                        tint = JudoRed,
-                        modifier = Modifier.size(18.dp)
-                    )
-                    Text(
-                        text = "Manuel",
-                        style = MaterialTheme.typography.titleSmall.copy(
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                    )
-                }
-            }
+            PointageModeChip(
+                label = "Visage",
+                icon = Icons.Default.Face,
+                active = isFaceMode,
+                activeColor = Color(0xFF1976D2),
+                testTag = "coach_face_mode_btn",
+                modifier = Modifier.weight(1f),
+                onClick = { pointageMode = PointageMode.FACE }
+            )
+            PointageModeChip(
+                label = "Caméra",
+                icon = Icons.Default.PhotoCamera,
+                active = false,
+                activeColor = JudoRed,
+                testTag = "coach_scan_judoka_btn",
+                modifier = Modifier.weight(1f),
+                onClick = onOpenScanner
+            )
+            PointageModeChip(
+                label = "Douchette",
+                icon = Icons.Default.QrCodeScanner,
+                active = pointageMode == PointageMode.DOUCHETTE,
+                activeColor = Color(0xFF6A4AA0),
+                testTag = "coach_douchette_mode_btn",
+                modifier = Modifier.weight(1f),
+                onClick = { pointageMode = PointageMode.DOUCHETTE }
+            )
+            PointageModeChip(
+                label = "Manuel",
+                icon = Icons.Default.PersonAdd,
+                active = false,
+                activeColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                testTag = "coach_manual_checkin_btn",
+                modifier = Modifier.weight(1f),
+                onClick = { isManualCheckInDialogOpen = true }
+            )
         }
  
-        // Recent Scans / Check-ins
-        Text(
-            text = "Derniers pointages (${sessionAttendances.size})",
-            style = MaterialTheme.typography.titleMedium.copy(
-                fontWeight = FontWeight.Bold
+        // Recent Scans / Check-ins — liste compacte : nombre d'athletes visibles maximise.
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                text = "Derniers pointages",
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Bold
+                )
             )
-        )
- 
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = JudoSuccess.copy(alpha = 0.15f)
+            ) {
+                Text(
+                    text = "${sessionAttendances.size}",
+                    style = MaterialTheme.typography.labelMedium.copy(
+                        fontWeight = FontWeight.Black,
+                        color = JudoSuccess
+                    ),
+                    modifier = Modifier
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                        .testTag("coach_pointage_count")
+                )
+            }
+        }
+
         LazyColumn(
             modifier = Modifier
                 .weight(1f)
                 .fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+            verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             if (sessionAttendances.isEmpty()) {
                 item {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(24.dp),
+                            .padding(20.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
@@ -716,42 +951,45 @@ fun CoachSessionPointageScreen(
                     Card(
                         shape = RoundedCornerShape(12.dp),
                         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)),
+                        border = BorderStroke(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline.copy(alpha = 0.35f)
+                        ),
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Row(
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                                horizontalArrangement = Arrangement.spacedBy(12.dp)
                             ) {
                                 JudokaAvatar(
                                     name = attendance.fullName,
                                     belt = attendance.belt,
                                     photoUrl = attendance.photoUrl,
-                                    sizeDp = 72
+                                    sizeDp = 44
                                 )
                                 Column {
                                     Text(
                                         text = attendance.fullName,
-                                        style = MaterialTheme.typography.titleMedium.copy(
+                                        style = MaterialTheme.typography.titleSmall.copy(
                                             fontWeight = FontWeight.Bold
                                         )
                                     )
                                     Text(
                                         text = "Pointé à ${attendance.timeString}",
-                                        style = MaterialTheme.typography.bodySmall.copy(
+                                        style = MaterialTheme.typography.labelMedium.copy(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     )
                                 }
                             }
- 
+
                             Surface(
                                 shape = RoundedCornerShape(8.dp),
                                 color = JudoSuccess.copy(alpha = 0.15f)
@@ -770,7 +1008,7 @@ fun CoachSessionPointageScreen(
                 }
             }
         }
- 
+
         // Finish Session Button
         OutlinedButton(
             onClick = onFinishSession,
@@ -778,14 +1016,14 @@ fun CoachSessionPointageScreen(
             border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.outline),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
+                .height(48.dp)
                 .testTag("coach_finish_session_btn")
         ) {
             Icon(
                 imageVector = Icons.Default.StopCircle,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(20.dp)
+                modifier = Modifier.size(18.dp)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
@@ -904,6 +1142,53 @@ fun CoachSessionPointageScreen(
             present = sessionAttendances,
             absent = categoryMembers.filter { it.id !in presentMemberIds },
             onDismiss = { statDetailMode = null }
+        )
+    }
+
+    // Pointage facial : toujours confirme par le coach (autoCheckInEnabled = false).
+    val faceCandidate = pendingFaceMember
+    if (faceCandidate != null) {
+        AlertDialog(
+            onDismissRequest = {
+                pendingFaceMember = null
+                analyzer?.reset()
+            },
+            title = { Text("Visage reconnu") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = faceCandidate.fullName,
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                    Text(
+                        text = "Confirmer la présence de cet athlète ? Aucun pointage n'est enregistré automatiquement.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onManualCheckInMember(faceCandidate)
+                        pendingFaceMember = null
+                        analyzer?.reset()
+                    },
+                    modifier = Modifier.testTag("face_confirm_checkin_btn")
+                ) {
+                    Text("Confirmer", color = JudoSuccess)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        pendingFaceMember = null
+                        analyzer?.reset()
+                    },
+                    modifier = Modifier.testTag("face_reject_checkin_btn")
+                ) {
+                    Text("Ce n'est pas lui", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         )
     }
 }

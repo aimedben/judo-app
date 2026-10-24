@@ -48,6 +48,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -59,6 +60,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -666,6 +668,10 @@ fun AdminSettingsScreen(
                 }
             }
         }
+
+        item {
+            AboutLicensesCard()
+        }
     }
 
     if (showClearDatabaseConfirmDialog) {
@@ -762,6 +768,65 @@ private fun ThemeOptionTile(
                     color = if (isSelected) JudoRed else MaterialTheme.colorScheme.onSurface
                 )
             )
+        }
+    }
+}
+
+/** Attribution legale du modele de reconnaissance faciale et des donnees biometriques. */
+@Composable
+private fun AboutLicensesCard() {
+    val uriHandler = LocalUriHandler.current
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("about_licenses_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Shield,
+                    contentDescription = null,
+                    tint = JudoRed,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "À propos / Licences",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+            Text(
+                text = "Reconnaissance faciale : EdgeFace-S (Idiap Research Institute), licence CC BY-NC-SA 4.0 — attribution, usage non commercial, partage à l'identique.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Poids embarqué : edgeface_s.onnx. Exécution 100 % locale via ONNX Runtime Mobile (licence MIT).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = "Aucune photo de visage n'est conservée : seules des empreintes chiffrées restent sur la tablette, hors sauvegarde et hors synchronisation.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            TextButton(
+                onClick = {
+                    uriHandler.openUri(
+                        "https://gitlab.idiap.ch/bob/bob.paper.tbiom2023_edgeface/-/blob/master/LICENSE"
+                    )
+                },
+                modifier = Modifier.testTag("edgeface_license_link")
+            ) {
+                Text("Voir la licence EdgeFace (CC BY-NC-SA 4.0)")
+            }
         }
     }
 }

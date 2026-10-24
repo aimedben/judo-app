@@ -1,4 +1,4 @@
-﻿package com.example.ui
+package com.example.ui
 
 import android.app.Application
 import android.content.Context
@@ -11,6 +11,9 @@ import android.os.VibratorManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
+import com.example.data.local.face.FaceDatabase
+import com.example.data.local.face.FaceGalleryRepository
+import com.example.util.face.FaceEngine
 import com.example.data.model.ActiveTrainingSession
 import com.example.data.model.AdminNotification
 import com.example.data.model.AdminProfile
@@ -36,6 +39,7 @@ import com.example.ui.screens.StatPeriod
 import com.example.util.CardDataParser
 import com.example.util.ExtractedMemberInfo
 import com.example.util.GroupCodes
+import com.example.util.NameKey
 import com.example.data.local.CategoryEntity
 import com.example.data.local.CoachEntity
 import com.example.data.local.PastSessionEntity
@@ -44,6 +48,7 @@ import com.example.data.local.sync.SyncAuditLogEntity
 import com.example.data.sync.SupabaseConfig
 import com.example.data.sync.SupabaseSyncService
 import com.example.data.sync.SyncReport
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -53,6 +58,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class ThemePreference {
     DARK, LIGHT, SYSTEM
@@ -71,6 +77,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = application.getSharedPreferences("judo_seddouk_prefs", Context.MODE_PRIVATE)
     private val database = AppDatabase.getInstance(application)
     val supabaseSyncService = SupabaseSyncService(application, database)
+    private val faceTemplates by lazy {
+        FaceGalleryRepository(FaceDatabase.getInstance(application).faceTemplateDao())
+    }
+
+    private val _faceGallery = MutableStateFlow<Map<Long, List<FloatArray>>>(emptyMap())
+    val faceGallery: StateFlow<Map<Long, List<FloatArray>>> = _faceGallery.asStateFlow()
     private val repository = JudoRepository(
         memberDao = database.memberDao(),
         attendanceDao = database.attendanceDao(),
@@ -159,13 +171,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun loadCoachProfile(): CoachProfile {
         return CoachProfile(
             name = prefs.getString("coach_name", "") ?: "",
-            title = prefs.getString("coach_title", "EntraÃ®neur Principal") ?: "EntraÃ®neur Principal",
+            title = prefs.getString("coach_title", "Entraîneur Principal") ?: "Entraîneur Principal",
             beltName = prefs.getString("coach_belt", "NOIRE") ?: "NOIRE",
-            danGrade = prefs.getString("coach_dan", "Ceinture Noire 4Ã¨me Dan") ?: "Ceinture Noire 4Ã¨me Dan",
+            danGrade = prefs.getString("coach_dan", "Ceinture Noire 4ème Dan") ?: "Ceinture Noire 4ème Dan",
             phone = prefs.getString("coach_phone", "0782487120") ?: "0782487120",
             photoUrl = prefs.getString("coach_photo_url", "") ?: "",
             clubName = prefs.getString("coach_club", "JUDO CLUB SEDDOUK") ?: "JUDO CLUB SEDDOUK",
-            bio = prefs.getString("coach_bio", "Professeur diplÃ´mÃ© d'Ã‰tat â€¢ Dojo Municipal de Seddouk") ?: "Professeur diplÃ´mÃ© d'Ã‰tat â€¢ Dojo Municipal de Seddouk"
+            bio = prefs.getString("coach_bio", "Professeur diplômé d'État • Dojo Municipal de Seddouk") ?: "Professeur diplômé d'État • Dojo Municipal de Seddouk"
         )
     }
 
@@ -346,7 +358,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun assignCoachToCategory(categoryId: String, coachName: String) {
         _categories.value = _categories.value.map { cat ->
             if (cat.id == categoryId) {
-                if (cat.coach1Name.isBlank() || cat.coach1Name == "Non assignÃ©") {
+                if (cat.coach1Name.isBlank() || cat.coach1Name == "Non assigné") {
                     cat.copy(coach1Name = coachName)
                 } else {
                     cat.copy(coach2Name = coachName)
@@ -730,7 +742,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             conflicts.add(
                 SessionConflict(
                     type = ConflictType.INVALID_TIME,
-                    message = "L'heure de fin (${newSession.endTime}) doit Ãªtre postÃ©rieure Ã  l'heure de dÃ©but (${newSession.startTime}).",
+                    message = "L'heure de fin (${newSession.endTime}) doit être postérieure à l'heure de début (${newSession.startTime}).",
                     isBlocking = true
                 )
             )
@@ -740,7 +752,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 conflicts.add(
                     SessionConflict(
                         type = ConflictType.INVALID_DURATION,
-                        message = "La durÃ©e minimale d'une sÃ©ance est de 30 minutes ($duration min actuellement).",
+                        message = "La durée minimale d'une séance est de 30 minutes ($duration min actuellement).",
                         isBlocking = true
                     )
                 )
@@ -748,7 +760,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 conflicts.add(
                     SessionConflict(
                         type = ConflictType.INVALID_DURATION,
-                        message = "La durÃ©e maximale d'une sÃ©ance est de 4 heures ($duration min actuellement).",
+                        message = "La durée maximale d'une séance est de 4 heures ($duration min actuellement).",
                         isBlocking = true
                     )
                 )
@@ -774,9 +786,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         SessionConflict(
                             type = ConflictType.CATEGORY_OVERLAP,
                             message = if (isExact) {
-                                "Doublon interdit : la catÃ©gorie ${newSession.categoryName} a dÃ©jÃ  ce crÃ©neau le ${newSession.dayOfWeekName} (${existing.startTime} - ${existing.endTime})."
+                                "Doublon interdit : la catégorie ${newSession.categoryName} a déjà ce créneau le ${newSession.dayOfWeekName} (${existing.startTime} - ${existing.endTime})."
                             } else {
-                                "Chevauchement horaire : la catÃ©gorie ${newSession.categoryName} a dÃ©jÃ  une sÃ©ance prÃ©vue sur ce crÃ©neau (${existing.startTime} - ${existing.endTime})."
+                                "Chevauchement horaire : la catégorie ${newSession.categoryName} a déjà une séance prévue sur ce créneau (${existing.startTime} - ${existing.endTime})."
                             },
                             conflictingSession = existing,
                             isBlocking = true
@@ -791,7 +803,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     conflicts.add(
                         SessionConflict(
                             type = ConflictType.COACH_OVERLAP,
-                            message = "${commonCoaches.joinToString(", ")} est dÃ©jÃ  affectÃ©(e) Ã  ${existing.categoryName} (${existing.startTime} - ${existing.endTime}).",
+                            message = "${commonCoaches.joinToString(", ")} est déjà affecté(e) à ${existing.categoryName} (${existing.startTime} - ${existing.endTime}).",
                             conflictingSession = existing,
                             isBlocking = false
                         )
@@ -889,15 +901,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ),
             AdminNotification(
                 id = "n2",
-                title = "SÃ©ance Benjamins terminÃ©e",
-                message = "EntraÃ®nement terminÃ© avec 18 prÃ©sents sur 21 (86%).",
-                timeAgo = "Hier Ã  19h00",
+                title = "Séance Benjamins terminée",
+                message = "Entraînement terminé avec 18 présents sur 21 (86%).",
+                timeAgo = "Hier à 19h00",
                 type = NotificationType.SESSION
             ),
             AdminNotification(
                 id = "n3",
-                title = "Certificats mÃ©dicaux",
-                message = "2 athlÃ¨tes doivent renouveler leur certificat mÃ©dical ce mois-ci.",
+                title = "Certificats médicaux",
+                message = "2 athlètes doivent renouveler leur certificat médical ce mois-ci.",
                 timeAgo = "Il y a 2 jours",
                 type = NotificationType.MEDICAL
             )
@@ -951,14 +963,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun correctSessionAttendance(sessionId: String, memberName: String, markAsPresent: Boolean) {
-        // Comparaison insensible a la casse : les listes enregistrees (import Excel, fiches
-        // renommees) peuvent differer du fullName actuel et la correction doit toujours mordre.
-        fun sameName(a: String, b: String): Boolean = a.trim().equals(b.trim(), ignoreCase = true)
+        // Comparaison SANS ambiguite : accents, majuscules, espaces multiples et renommages
+        // doivent reconnaitre le meme athlete, sinon la correction cree un doublon
+        // (une entree presente + une entree absente au lieu de changer le statut).
+        fun sameName(a: String, b: String): Boolean = NameKey.same(a, b)
 
         _pastSessions.value = _pastSessions.value.map { session ->
             if (session.id == sessionId) {
                 if (markAsPresent) {
-                    val newAbsents = session.absentMemberNames.filter { !sameName(it, memberName) }
+                    val newAbsents = session.absentMemberNames.filterNot { sameName(it, memberName) }
                     val newPresents = if (session.presentMemberNames.any { sameName(it, memberName) }) {
                         session.presentMemberNames
                     } else {
@@ -971,7 +984,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         absentMemberNames = newAbsents
                     )
                 } else {
-                    val newPresents = session.presentMemberNames.filter { !sameName(it, memberName) }
+                    val newPresents = session.presentMemberNames.filterNot { sameName(it, memberName) }
                     val newAbsents = if (session.absentMemberNames.any { sameName(it, memberName) }) {
                         session.absentMemberNames
                     } else {
@@ -986,7 +999,36 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } else session
         }
-        _pastSessions.value.firstOrNull { it.id == sessionId }?.let { persistPastSession(it) }
+        _pastSessions.value.firstOrNull { it.id == sessionId }?.let {
+            val fixed = normalizeRosters(it)
+            _pastSessions.value = _pastSessions.value.map { s -> if (s.id == sessionId) fixed else s }
+            persistPastSession(fixed)
+        }
+    }
+
+    /**
+     * Nettoyage defensif des rosters : un athlete ne peut JAMAIS figurer deux fois dans la
+     * même liste (variantes de nom) ni dans les deux listes a la fois (priorite au present).
+     */
+    private fun normalizeRosters(session: PastTrainingSession): PastTrainingSession {
+        val presents = LinkedHashMap<String, String>() // cle canonique -> nom conserve
+        session.presentMemberNames.forEach { name ->
+            val key = NameKey.canonical(name)
+            if (key.isNotBlank() && !presents.containsKey(key)) presents[key] = name
+        }
+        val absents = LinkedHashMap<String, String>()
+        session.absentMemberNames.forEach { name ->
+            val key = NameKey.canonical(name)
+            if (key.isNotBlank() && !presents.containsKey(key) && !absents.containsKey(key)) {
+                absents[key] = name
+            }
+        }
+        return session.copy(
+            presentCount = presents.size,
+            absentCount = absents.size,
+            presentMemberNames = presents.values.toList(),
+            absentMemberNames = absents.values.toList()
+        )
     }
 
     fun selectCategory(category: JudoCategory?) {
@@ -1034,9 +1076,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             absentMemberNames = absentNames
         )
 
-        _pastSessions.value = listOf(newPastSession) + _pastSessions.value
+        // Un athlete ne doit jamais apparaitre dans les deux listes ni deux fois
+        // (presentation des listes par nom : variants = doublon).
+        val normalized = normalizeRosters(newPastSession)
+        _pastSessions.value = listOf(normalized) + _pastSessions.value
         _activeSession.value = null
-        persistPastSession(newPastSession)
+        persistPastSession(normalized)
     }
 
     val allMembers: StateFlow<List<Member>> = repository.allMembers
@@ -1093,6 +1138,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearDatabase(onComplete: () -> Unit = {}) {
         viewModelScope.launch {
+            faceTemplates.deleteAll()
+            _faceGallery.value = emptyMap()
             repository.clearEntireDatabase()
             prefs.edit().putBoolean("has_initialized_db", true).apply()
             _activeCheckInResult.value = null
@@ -1148,7 +1195,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 )
                 // IMPORTANT : aucun ajout automatique d'athlete. Un code inconnu declenche
                 // une fenetre d'information a accepter (voir emitUnknownQr).
-                // One read â‡’ exactly one feedback, one vibration, one sound.
+                // One read ⇒ exactly one feedback, one vibration, one sound.
                 triggerHapticFeedback(result)
                 when (result) {
                     is CheckInResult.Success -> emitCheckInSuccess(result)
@@ -1158,7 +1205,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     is CheckInResult.Registered -> {
                         _activeCheckInResult.value = result
                         _coachScanFeedback.value = CoachScanFeedback.Invalid(
-                            "Fiche crÃ©Ã©e : ${result.member.fullName}. Scannez Ã  nouveau pour pointer."
+                            "Fiche créée : ${result.member.fullName}. Scannez à nouveau pour pointer."
                         )
                     }
                     is CheckInResult.Error -> {
@@ -1177,7 +1224,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun onIncompleteScan() {
         if (isProcessingScan) return
         _activeCheckInResult.value = null
-        _coachScanFeedback.value = CoachScanFeedback.Invalid("Lecture incomplÃ¨te, veuillez rescanner")
+        _coachScanFeedback.value = CoachScanFeedback.Invalid("Lecture incomplète, veuillez rescanner")
     }
 
     /**
@@ -1190,7 +1237,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (extracted.firstName.isNotBlank() || extracted.lastName.isNotBlank()) {
             _pendingMemberRegistration.value = PendingMemberRegistration(extracted)
             _coachScanFeedback.value = CoachScanFeedback.Invalid(
-                "AthlÃ¨te non reconnu : validez l'ajout Ã  la liste des membres"
+                "Athlète non reconnu : validez l'ajout à la liste des membres"
             )
         } else {
             _unassignedQrCode.value = rawCode
@@ -1265,6 +1312,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearScannedMemberForCreation() {
         _scannedMemberForCreation.value = null
+    }
+
+    /** Derniers ids fournis a prepareFaceGallery : recharge la galerie apres un enrôlement. */
+    private var lastFaceGalleryIds: List<Long> = emptyList()
+
+    /**
+     * Charge et dechiffre en memoire la galerie faciale des athletes du groupe.
+     * Les empreintes d'un autre modele (version/hash different) sont ignorees.
+     */
+    fun prepareFaceGallery(memberIds: List<Long>) {
+        lastFaceGalleryIds = memberIds.distinct()
+        if (memberIds.isEmpty()) {
+            _faceGallery.value = emptyMap()
+            return
+        }
+        viewModelScope.launch {
+            val embedder = FaceEngine.embedder(getApplication()) ?: run {
+                _faceGallery.value = emptyMap()
+                return@launch
+            }
+            val gallery = runCatching {
+                faceTemplates.loadGalleryForMembers(lastFaceGalleryIds, embedder.modelVersion)
+            }.getOrDefault(emptyMap())
+            _faceGallery.value = gallery
+        }
+    }
+
+    /** Nombre d'empreintes deja enrôlées pour un athlete (lecture directe en IO). */
+    suspend fun faceEnrollmentCount(memberId: Long): Int =
+        runCatching { faceTemplates.getEnrollmentStatus(memberId) }.getOrDefault(0)
+
+    /**
+     * Enregistre les echantillons d'enrôlement d'un athlete (capture live), en remplacant
+     * les empreintes existantes par UN PROFIL MOYENNE plus stable et plus robuste.
+     * Aucune image brute n'est persistee hors chiffrement AES-GCM local.
+     */
+    fun saveFaceSamples(
+        memberId: Long,
+        samples: List<Pair<FloatArray, Float>>,
+        onDone: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            val embedder = FaceEngine.embedder(getApplication())
+            if (embedder == null || samples.isEmpty()) {
+                onDone(false)
+                return@launch
+            }
+            val ok = withContext(Dispatchers.IO) {
+                runCatching {
+                    faceTemplates.deleteForMember(memberId)
+                    val first = samples.first().first
+                    val dim = first.size
+                    val avg = FloatArray(dim)
+                    samples.forEach { (emb, _) ->
+                        var i = 0
+                        while (i < dim) {
+                            avg[i] += emb[i]
+                            i++
+                        }
+                    }
+                    val n = samples.size.toFloat()
+                    var i = 0
+                    while (i < dim) {
+                        avg[i] /= n
+                        i++
+                    }
+                    val qualityAvg = samples.map { it.second }.average().toFloat()
+                    faceTemplates.addTemplate(
+                        memberId = memberId,
+                        embedding = avg,
+                        modelVersion = embedder.modelVersion,
+                        qualityScore = qualityAvg
+                    )
+                }.getOrDefault(false)
+            }
+            if (ok && lastFaceGalleryIds.isNotEmpty() && memberId in lastFaceGalleryIds) {
+                prepareFaceGallery(lastFaceGalleryIds)
+            }
+            onDone(ok)
+        }
+    }
+
+    fun clearFaceGallery() {
+        _faceGallery.value = emptyMap()
     }
 
     fun manualCheckIn(memberId: Long) {
@@ -1343,8 +1474,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun associateQrToMember(memberId: Long, qrCode: String) {
         viewModelScope.launch {
-            // RÃ¨gle : associer une carte Ã  une fiche n'est pas un pointage.
-            // Aucune prÃ©sence n'est enregistrÃ©e ici.
+            // Règle : associer une carte à une fiche n'est pas un pointage.
+            // Aucune présence n'est enregistrée ici.
             repository.associateQrCodeToMember(memberId, qrCode)
             _unassignedQrCode.value = null
         }
@@ -1372,9 +1503,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun saveMember(member: Member) {
         viewModelScope.launch {
             if (member.id == 0L) {
-                // RÃ¨gle : crÃ©er une fiche n'est jamais un pointage. L'athlÃ¨te dÃ©marre
-                // Â« Absent / Non pointÃ© Â» dans toutes les sÃ©ances ; seul un scan valide
-                // le rend prÃ©sent.
+                // Règle : créer une fiche n'est jamais un pointage. L'athlète démarre
+                // « Absent / Non pointé » dans toutes les séances ; seul un scan valide
+                // le rend présent.
                 repository.insertMember(member)
             } else {
                 repository.updateMember(member)
@@ -1384,6 +1515,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteMember(member: Member) {
         viewModelScope.launch {
+            // Suppression en cascade des empreintes faciales (aucune donnee orpheline).
+            faceTemplates.deleteForMember(member.id)
+            _faceGallery.value = _faceGallery.value - member.id
             repository.deleteMember(member)
         }
     }

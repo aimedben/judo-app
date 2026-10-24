@@ -38,10 +38,15 @@ object GroupCodes {
         return category.any { it in member } || member.any { it in category }
     }
 
-    /** Libelle lisible d'un code : "U18" -> "Cadets (U18)". */
-    fun label(categoryGroupCode: String?): String =
-        canonical(categoryGroupCode)
+    /**
+     * Libelle lisible d'un code, minimise : une categorie couvrant cadets + adults
+     * ("U18,SENIOR") s'affiche "Adults (U18)" — jamais "Cadets (U18), Juniors / Séniors".
+     */
+    fun label(categoryGroupCode: String?): String {
+        val codes = canonical(categoryGroupCode).distinct()
+        if (codes.contains("U18") && codes.contains("SENIOR")) return "Adults (U18)"
+        return codes
             .map { code -> JudoGroup.entries.firstOrNull { it.code == code }?.label ?: code }
-            .distinct()
             .joinToString(", ")
+    }
 }

@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AccessibilityNew
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Cake
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.FamilyRestroom
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.Person
@@ -54,6 +56,7 @@ import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -63,6 +66,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -90,9 +94,11 @@ import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoGoldLight
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.ui.screens.FaceEnrollmentScreen
 import com.example.util.CardDataParser
 import com.example.util.ExtractedMemberInfo
 import com.example.util.PhotoCompressor
+import com.example.util.face.FaceEngine
 import kotlinx.coroutines.launch
 
 /**
@@ -167,6 +173,9 @@ fun AddEditMemberDialog(
     onRequestScanCard: (() -> Unit)? = null,
     onEditCoachProfile: (() -> Unit)? = null,
     findDuplicate: (Member) -> Member? = { null },
+    // Enrolement facial : disponibles seulement pour un athlete deja enregistre (initialMember != null).
+    getFaceEnrollmentCount: (suspend (Long) -> Int)? = null,
+    saveFaceSamples: ((Long, List<Pair<FloatArray, Float>>, (Boolean) -> Unit) -> Unit)? = null,
     onSave: (Member) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -199,6 +208,21 @@ fun AddEditMemberDialog(
     }
     var status by remember {
         mutableStateOf(initialMember?.status ?: "ACTIF")
+    }
+
+    // ---- Enrolement facial (athlete deja enregistre uniquement) ----
+    var showFaceEnrollment by remember { mutableStateOf(false) }
+    var faceCount by remember { mutableStateOf(-1) }
+    var faceCountRefresh by remember { mutableStateOf(0) }
+    val canEnrollFace = initialMember != null &&
+        getFaceEnrollmentCount != null &&
+        saveFaceSamples != null
+    LaunchedEffect(canEnrollFace, initialMember?.id, faceCountRefresh) {
+        val memberId = initialMember?.id
+        val ask = getFaceEnrollmentCount
+        if (canEnrollFace && memberId != null && ask != null) {
+            faceCount = ask(memberId)
+        }
     }
 
     var selectedGroup by remember {
@@ -612,6 +636,73 @@ fun AddEditMemberDialog(
                                     Spacer(modifier = Modifier.width(4.dp))
                                     Text("Retirer", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // ==========================================
+                // SECTION 3 (OPTIONNEL): IDENTIFICATION PAR VISAGE
+                // ==========================================
+                if (canEnrollFace) {
+                    Card(
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+                        ),
+                        border = CardDefaults.outlinedCardBorder(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("face_enroll_entry")
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 12.dp)
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .clip(CircleShape)
+                                    .background(JudoRed.copy(alpha = 0.12f)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Face,
+                                    contentDescription = null,
+                                    tint = JudoRed,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    text = "Pointage par reconnaissance du visage",
+                                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                                val countLabel = when {
+                                    faceCount <= 0 -> "Aucune empreinte enrôlée pour cet athlète."
+                                    else -> "$faceCount empreinte(s) enregistrée(s), chiffrée(s) sur cette tablette."
+                                }
+                                Text(
+                                    text = countLabel,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            FilledTonalButton(
+                                onClick = { showFaceEnrollment = true },
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.testTag("face_enroll_open_btn")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.AccessibilityNew,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(if (faceCount > 0) "Recapturer" else "Capturer le visage")
                             }
                         }
                     }
@@ -1111,6 +1202,22 @@ fun AddEditMemberDialog(
                 isRealCardScanDialogOpen = false
             },
             onDismiss = { isRealCardScanDialogOpen = false }
+        )
+    }
+
+    if (showFaceEnrollment && initialMember != null && saveFaceSamples != null) {
+        FaceEnrollmentScreen(
+            member = initialMember,
+            savedCount = faceCount.coerceAtLeast(0),
+            hasEngine = FaceEngine.engineReady(context),
+            onSaveSamples = { samples, onDone ->
+                saveFaceSamples.invoke(initialMember.id, samples, onDone)
+            },
+            onDismiss = {
+                showFaceEnrollment = false
+                // Recharge le compteur apres un (re)enrolement reussi ou abandonne.
+                faceCountRefresh++
+            }
         )
     }
 }

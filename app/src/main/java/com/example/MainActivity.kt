@@ -46,6 +46,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -130,6 +131,7 @@ import com.example.util.DouchetteReceiver
 import com.example.util.MemberDuplicates
 import com.example.util.SessionScope
 
+// Ordre navbar admin : Accueil, Athlètes, Coachs, Catégories puis Séances.
 enum class ScreenTab(val label: String, val icon: ImageVector) {
     HOME("Accueil", Icons.Default.Dashboard),
     MEMBERS("Athlètes", Icons.Default.People),
@@ -237,6 +239,8 @@ class MainActivity : ComponentActivity() {
 fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     var currentTab by remember { mutableStateOf(ScreenTab.HOME) }
     var selectedMemberId by remember { mutableStateOf<Long?>(null) }
+    var membersSearchQuery by remember { mutableStateOf("") }
+    var membersGroupFilter by remember { mutableStateOf("ALL") }
     var activeStatFilter by remember { mutableStateOf<StatFilterMode?>(null) }
     var activeStatPeriod by remember { mutableStateOf(StatPeriod.TODAY) }
     var dashboardPeriod by remember { mutableStateOf(StatPeriod.TODAY) }
@@ -313,6 +317,16 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     val categoryMembers = remember(allMembers, selectedCategory) {
         if (selectedCategory == null) allMembers
         else allMembers.filter { selectedCategory!!.covers(it.groupCode) }
+    }
+
+    // Galerie faciale du groupe : dechiffree en memoire uniquement pour la seance en cours.
+    val faceGallery by viewModel.faceGallery.collectAsStateWithLifecycle()
+    LaunchedEffect(sessionForSelectedCategory?.categoryId, sessionForSelectedCategory?.startTimestamp, categoryMembers.size) {
+        if (sessionForSelectedCategory != null) {
+            viewModel.prepareFaceGallery(categoryMembers.map { it.id })
+        } else {
+            viewModel.clearFaceGallery()
+        }
     }
 
     // Pointages du jour pour la catégorie sélectionnée. Portée « journée » : sert
@@ -507,6 +521,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             onManualCheckInMember = { member -> viewModel.manualCheckIn(member.id) },
                             onNumeroScanned = { code -> code?.let { viewModel.onQrScanned(it) } },
                             onFinishSession = { isSessionSummaryShown = true },
+                            faceGallery = faceGallery,
                             onDismissFeedback = { viewModel.clearCoachScanFeedback() }
                         )
                     } else if (isPreparingSession) {
@@ -1163,6 +1178,12 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
             coachProfile = coachProfile,
             onEditCoachProfile = { isCoachProfileDialogOpen = true },
             findDuplicate = { candidate -> MemberDuplicates.find(allMembers, candidate) },
+            getFaceEnrollmentCount = { memberId ->
+                viewModel.faceEnrollmentCount(memberId)
+            },
+            saveFaceSamples = { memberId, samples, onDone ->
+                viewModel.saveFaceSamples(memberId, samples, onDone)
+            },
             onSave = { updated ->
                 viewModel.saveMember(updated)
                 memberToEdit = null
@@ -1282,6 +1303,7 @@ private fun AppScreenContent(
                 member = member,
                 attendanceList = memberAttendances,
                 allClubAttendances = allAttendance,
+                categories = categories,
                 scheduledSessions = scheduledSessions,
                 officialStartDate = clubSettings.officialStartDate,
                 onBack = onBackFromMemberDetail,
@@ -1422,7 +1444,11 @@ private fun AppScreenContent(
                 onEditCoachProfile = onEditCoachProfile,
                 onSelectMember = onSelectMember,
                 onSaveMember = onSaveMember,
-                categories = categories
+                categories = categories,
+                searchQuery = membersSearchQuery,
+                onSearchQueryChange = { membersSearchQuery = it },
+                selectedGroupFilter = membersGroupFilter,
+                onSelectedGroupFilterChange = { membersGroupFilter = it }
             )
         }
         ScreenTab.COACHES -> {

@@ -38,7 +38,7 @@ enum class JudoGroup(
     BENJAMINS("U13", "Benjamins (U13)", "2016-2015"),
     MINIMES("U15", "Minimes (U15)", "2013-2014"),
     CADETS("U18", "Cadets (U18)", "2012 et moins"),
-    SENIORS("SENIOR", "Juniors / Séniors", "2012 et moins");
+    SENIORS("SENIOR", "Adults", "2012 et moins");
 
     companion object {
         fun fromString(value: String): JudoGroup {

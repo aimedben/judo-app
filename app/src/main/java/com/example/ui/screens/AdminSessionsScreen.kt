@@ -89,6 +89,7 @@ import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.util.AbsentSmsNotifier
 import com.example.util.MemberQr
+import com.example.util.NameKey
 import kotlinx.coroutines.delay
 
 import com.example.data.model.CoachUser
@@ -119,7 +120,6 @@ fun AdminSessionsScreen(
     var currentMainTab by remember { mutableStateOf(initialTab) }
     var selectedCategoryFilter by remember { mutableStateOf("ALL") }
     var selectedSessionDetail by remember { mutableStateOf<PastTrainingSession?>(null) }
-    var sessionToCorrect by remember { mutableStateOf<PastTrainingSession?>(null) }
     var deleteSelectionMode by remember { mutableStateOf(false) }
     var selectedForDeletion by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmMultiDelete by remember { mutableStateOf(false) }
@@ -503,7 +503,7 @@ fun AdminSessionsScreen(
                                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                                 ) {
                                     TextButton(
-                                        onClick = { sessionToCorrect = session },
+                                        onClick = { selectedSessionDetail = session },
                                         contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                                     ) {
                                         Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(14.dp))
@@ -526,17 +526,121 @@ fun AdminSessionsScreen(
         }
     }
 
-    // Detail Dialog
+    // Detail Dialog: consultation + edition directe de l'emargement, avec confirmation.
     if (selectedSessionDetail != null) {
         val session = selectedSessionDetail!!
-        var detailTab by remember { mutableStateOf(0) }
-        var showAbsentSmsDialog by remember { mutableStateOf(false) }
+        var detailTab by remember(session.id) { mutableStateOf(0) }
+        var showAbsentSmsDialog by remember(session.id) { mutableStateOf(false) }
+        var searchQuery by remember(session.id) { mutableStateOf("") }
+        var scanBuffer by remember(session.id) { mutableStateOf("") }
+        var scanFeedback by remember(session.id) { mutableStateOf<String?>(null) }
+        var scanFeedbackError by remember(session.id) { mutableStateOf(false) }
+        var pendingToggleName by remember(session.id) { mutableStateOf<String?>(null) }
+        var pendingTogglePresent by remember(session.id) { mutableStateOf(false) }
+        val scanFocusRequester = remember { FocusRequester() }
 
-        val sessionRoster = remember(members, session) {
+        val sessionRoster = remember(members, session.id, session.groupCode) {
             AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
         }
-        val absentMemberObjects = remember(sessionRoster, session) {
-            AbsentSmsNotifier.resolveAbsentMembers(session.absentMemberNames, sessionRoster)
+        // Miroir local du roster : chaque changement confirme est persiste via onCorrectAttendance.
+        var presentNames by remember(session.id) {
+            mutableStateOf(
+                session.presentMemberNames
+                    .associateBy { NameKey.canonical(it) }
+                    .values
+                    .toSet()
+            )
+        }
+
+        fun isPresent(member: Member): Boolean =
+            presentNames.any { NameKey.same(it, member.fullName) }
+
+        fun requestToggle(name: String, markPresent: Boolean) {
+            pendingToggleName = name
+            pendingTogglePresent = markPresent
+        }
+
+        fun confirmToggle() {
+            val name = pendingToggleName ?: return
+            val markPresent = pendingTogglePresent
+            onCorrectAttendance(session.id, name, markPresent)
+            presentNames = if (markPresent) {
+                presentNames.filterNot { NameKey.same(it, name) }.toSet() + name
+            } else {
+                presentNames.filterNot { NameKey.same(it, name) }.toSet()
+            }
+            scanFeedbackError = false
+            scanFeedback = "$name a été marqué(e) ${if (markPresent) "présent(e)" else "absent(e)"} ✓"
+            pendingToggleName = null
+        }
+
+        fun handleScan(raw: String) {
+            val payload = raw.trim()
+            if (payload.isBlank()) return
+            val qr = MemberQr.normalize(payload)
+            if (qr.isBlank()) {
+                scanFeedbackError = true
+                scanFeedback = "Lecture non reconnue : le code de la carte n'a pas été trouvé."
+                return
+            }
+            val member = sessionRoster.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
+                ?: qr.removePrefix(MemberQr.PREFIX).toLongOrNull()
+                    ?.let { id -> sessionRoster.firstOrNull { it.id == id } }
+                ?: members.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
+            when {
+                member == null -> {
+                    scanFeedbackError = true
+                    scanFeedback = "Carte $qr : aucune fiche n'a été trouvée avec ce code."
+                }
+                AbsentSmsNotifier.membersOfGroup(listOf(member), session.groupCode).isEmpty() -> {
+                    scanFeedbackError = true
+                    scanFeedback = "${member.fullName} n'appartient pas à la séance ${session.categoryName}."
+                }
+                isPresent(member) -> {
+                    scanFeedbackError = false
+                    scanFeedback = "${member.fullName} est déjà marqué(e) présent(e) pour cette séance."
+                }
+                else -> {
+                    scanFeedbackError = false
+                    scanFeedback = "Carte lue : confirmez le pointage de ${member.fullName}."
+                    requestToggle(member.fullName, true)
+                }
+            }
+        }
+
+        // Une douchette sans suffixe Enter termine quand le flux de caracteres se calme.
+        LaunchedEffect(scanBuffer) {
+            val pending = scanBuffer
+            if (pending.isNotBlank()) {
+                delay(450)
+                if (scanBuffer == pending) {
+                    scanBuffer = ""
+                    handleScan(pending)
+                }
+            }
+        }
+
+        val presentRows: List<Pair<Member?, String>> = buildList {
+            sessionRoster.filter { isPresent(it) }.forEach { add(it to it.fullName) }
+            presentNames
+                .filter { name -> sessionRoster.none { NameKey.same(it.fullName, name) } }
+                .sorted()
+                .forEach { add(null to it) }
+        }
+        val absentRows: List<Pair<Member?, String>> = buildList {
+            sessionRoster.filterNot { isPresent(it) }.forEach { add(it to it.fullName) }
+            session.absentMemberNames
+                .filter { name ->
+                    presentNames.none { NameKey.same(it, name) } &&
+                        sessionRoster.none { NameKey.same(it.fullName, name) }
+                }
+                .sorted()
+                .forEach { add(null to it) }
+        }
+        val visibleRows = (if (detailTab == 0) presentRows else absentRows)
+            .filter { searchQuery.isBlank() || it.second.contains(searchQuery, ignoreCase = true) }
+        val absentMemberObjects = remember(absentRows) {
+            AbsentSmsNotifier.resolveAbsentMembers(absentRows.map { it.second }, sessionRoster)
         }
 
         Dialog(onDismissRequest = { selectedSessionDetail = null }) {
@@ -555,13 +659,15 @@ fun AdminSessionsScreen(
                 border = CardDefaults.outlinedCardBorder(),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 16.dp)
+                    .widthIn(max = 620.dp)
+                    .padding(vertical = 8.dp)
+                    .testTag("hist_correction_dialog")
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(20.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -583,7 +689,7 @@ fun AdminSessionsScreen(
                         }
                     }
 
-                    // Stat cards row
+                    // Stat cards row (live: reflecte les corrections deja confirmees)
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -594,7 +700,7 @@ fun AdminSessionsScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = "${session.effectivePresentCount}", fontWeight = FontWeight.Bold, color = JudoSuccess, fontSize = 18.sp)
+                                Text(text = "${presentNames.size}", fontWeight = FontWeight.Bold, color = JudoSuccess, fontSize = 18.sp)
                                 Text(text = "Présents", style = MaterialTheme.typography.labelSmall)
                             }
                         }
@@ -604,7 +710,7 @@ fun AdminSessionsScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = "${session.effectiveAbsentCount}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 18.sp)
+                                Text(text = "${absentRows.size}", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.error, fontSize = 18.sp)
                                 Text(text = "Absents", style = MaterialTheme.typography.labelSmall)
                             }
                         }
@@ -614,248 +720,28 @@ fun AdminSessionsScreen(
                             modifier = Modifier.weight(1f)
                         ) {
                             Column(modifier = Modifier.padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(text = "${session.effectivePresentCount + session.effectiveAbsentCount}", fontWeight = FontWeight.Bold, color = JudoGold, fontSize = 18.sp)
+                                Text(text = "${presentNames.size + absentRows.size}", fontWeight = FontWeight.Bold, color = JudoGold, fontSize = 18.sp)
                                 Text(text = "Total inscrits", style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
 
-                    // Coachs
                     Text(
                         text = "Coachs présents : ${session.coach1Name}${if (session.coach2Present) " • ${session.coach2Name}" else ""}",
                         style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.SemiBold, color = JudoGold)
                     )
 
-                    // Tabs Présents vs Absents
                     TabRow(selectedTabIndex = detailTab) {
                         Tab(
                             selected = detailTab == 0,
                             onClick = { detailTab = 0 },
-                            text = { Text("Présents (${session.presentMemberNames.size})") }
+                            text = { Text("Présents (${presentNames.size})") }
                         )
                         Tab(
                             selected = detailTab == 1,
                             onClick = { detailTab = 1 },
-                            text = { Text("Absents (${session.absentMemberNames.size})") }
+                            text = { Text("Absents (${absentRows.size})") }
                         )
-                    }
-
-                    // List of names
-                    val listToShow = if (detailTab == 0) session.presentMemberNames else session.absentMemberNames
-                    if (listToShow.isEmpty()) {
-                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), contentAlignment = Alignment.Center) {
-                            Text(text = "Aucun membre dans cette liste.", style = MaterialTheme.typography.bodySmall)
-                        }
-                    } else {
-                        LazyColumn(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(180.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            items(listToShow) { name ->
-                                Surface(
-                                    shape = RoundedCornerShape(8.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                        horizontalArrangement = Arrangement.SpaceBetween,
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(text = name, style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium))
-                                        Icon(
-                                            imageVector = if (detailTab == 0) Icons.Default.CheckCircle else Icons.Default.Close,
-                                            contentDescription = null,
-                                            tint = if (detailTab == 0) JudoSuccess else MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    if (detailTab == 1 && absentMemberObjects.isNotEmpty()) {
-                        OutlinedButton(
-                            onClick = { showAbsentSmsDialog = true },
-                            border = BorderStroke(1.5.dp, JudoRed),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = JudoRed),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("admin_absent_sms_btn")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.Message,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "SMS aux parents des absents (${absentMemberObjects.size})",
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                        Button(
-                            onClick = { selectedSessionDetail = null },
-                            colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
-                        ) {
-                            Text("Fermer")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Correction Dialog: douchette scan or manual selection, like the check-in space.
-    if (sessionToCorrect != null) {
-        val session = sessionToCorrect!!
-
-        val sessionRoster = remember(members, session.id, session.groupCode) {
-            AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
-        }
-        // Local live mirror of the stored present list; every change is persisted through
-        // onCorrectAttendance, which updates the recorded session and pushes it to the cloud.
-        var presentNames by remember(session.id) {
-            mutableStateOf(session.presentMemberNames.toSet())
-        }
-        var searchQuery by remember { mutableStateOf("") }
-        var scanBuffer by remember { mutableStateOf("") }
-        var scanFeedback by remember { mutableStateOf<String?>(null) }
-        var scanFeedbackError by remember { mutableStateOf(false) }
-        val scanFocusRequester = remember { FocusRequester() }
-
-        fun isPresent(member: Member): Boolean =
-            presentNames.any { it.trim().equals(member.fullName.trim(), ignoreCase = true) }
-
-        fun presentCountAll(): Int = presentNames.size
-        fun absentCountAll(): Int =
-            (maxOf(sessionRoster.size, presentNames.size) - presentCountAll()).coerceAtLeast(0)
-
-        fun applyCorrection(member: Member, markPresent: Boolean) {
-            presentNames = if (markPresent) {
-                presentNames + member.fullName
-            } else {
-                presentNames.filterNot { it.trim().equals(member.fullName.trim(), ignoreCase = true) }.toSet()
-            }
-            onCorrectAttendance(session.id, member.fullName, markPresent)
-        }
-
-        fun handleScan(raw: String) {
-            val payload = raw.trim()
-            if (payload.isBlank()) return
-            val qr = MemberQr.normalize(payload)
-            if (qr.isBlank()) {
-                scanFeedbackError = true
-                scanFeedback = "Lecture non reconnue : le code de la carte n'a pas été trouvé."
-                return
-            }
-            val member = sessionRoster.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
-                ?: qr.removePrefix(MemberQr.PREFIX).toLongOrNull()
-                    ?.let { id -> sessionRoster.firstOrNull { it.id == id } }
-                    ?: members.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
-            when {
-                member == null -> {
-                    scanFeedbackError = true
-                    scanFeedback = "Carte $qr : aucune fiche n'a été trouvée avec ce code."
-                }
-                AbsentSmsNotifier.membersOfGroup(listOf(member), session.groupCode).isEmpty() -> {
-                    scanFeedbackError = true
-                    scanFeedback = "${member.fullName} n'appartient pas à la séance ${session.categoryName}."
-                }
-                isPresent(member) -> {
-                    scanFeedbackError = false
-                    scanFeedback = "${member.fullName} est déjà marqué(e) présent(e) pour cette séance."
-                }
-                else -> {
-                    applyCorrection(member, true)
-                    scanFeedbackError = false
-                    scanFeedback = "${member.fullName} a été marqué(e) présent(e) ✓"
-                }
-            }
-        }
-
-        // A douchette that sends no Enter suffix still completes: handle the code once the
-        // character stream goes quiet, exactly like the in-session scanner buffer.
-        LaunchedEffect(scanBuffer) {
-            val pending = scanBuffer
-            if (pending.isNotBlank()) {
-                delay(450)
-                if (scanBuffer == pending) {
-                    scanBuffer = ""
-                    handleScan(pending)
-                }
-            }
-        }
-        LaunchedEffect(session.id) { scanFocusRequester.requestFocus() }
-
-        val filteredRoster = remember(searchQuery, sessionRoster) {
-            if (searchQuery.isBlank()) sessionRoster
-            else sessionRoster.filter {
-                it.fullName.contains(searchQuery, ignoreCase = true)
-            }
-        }
-
-        AlertDialog(
-            onDismissRequest = { sessionToCorrect = null },
-            modifier = Modifier.widthIn(max = 560.dp).testTag("hist_correction_dialog"),
-            title = {
-                Column {
-                    Text(
-                        text = "Correction administrative",
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Black)
-                    )
-                    Text(
-                        text = "Séance ${session.categoryName} • ${session.dateString} • ${session.startTime} - ${session.endTime}",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-                }
-            },
-            text = {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = JudoSuccess.copy(alpha = 0.15f),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = "Présents ${presentCountAll()}",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.Bold, color = JudoSuccess
-                                ),
-                                modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
-                        }
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text(
-                                text = "Absents ${absentCountAll()}",
-                                style = MaterialTheme.typography.labelMedium.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.error
-                                ),
-                                modifier = Modifier.padding(vertical = 8.dp).fillMaxWidth(),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                            )
-                        }
                     }
 
                     OutlinedTextField(
@@ -925,7 +811,7 @@ fun AdminSessionsScreen(
                     )
 
                     Text(
-                        text = "Touchez un athlète pour basculer présent/absent (${filteredRoster.size}) :",
+                        text = "Touchez un athlète pour changer sa présence (confirmation demandée) :",
                         style = MaterialTheme.typography.labelMedium.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -934,18 +820,18 @@ fun AdminSessionsScreen(
                     LazyColumn(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(300.dp)
+                            .height(220.dp)
                             .testTag("hist_correction_list"),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        if (filteredRoster.isEmpty()) {
+                        if (visibleRows.isEmpty()) {
                             item {
                                 Box(
                                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Text(
-                                        text = "Aucun athlète trouvé pour cette séance.",
+                                        text = "Aucun athlète dans cette liste.",
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
@@ -953,82 +839,104 @@ fun AdminSessionsScreen(
                                 }
                             }
                         } else {
-                            items(filteredRoster, key = { it.id }) { member ->
-                                val isPresentNow = isPresent(member)
+                            items(
+                                items = visibleRows,
+                                key = { (member, name) -> member?.let { "m_${it.id}" } ?: "n_$name" }
+                            ) { (member, name) ->
+                                val isPresentNow = if (member != null) {
+                                    isPresent(member)
+                                } else {
+                                    presentNames.any { NameKey.same(it, name) }
+                                }
+                                AttendanceEditableRow(
+                                    name = name,
+                                    member = member,
+                                    isPresent = isPresentNow,
+                                    modifier = Modifier.testTag("hist_correction_row_${member?.id ?: name}"),
+                                    onClick = { requestToggle(name, !isPresentNow) }
+                                )
+                            }
+                        }
+                    }
+
+                    if (detailTab == 1 && absentMemberObjects.isNotEmpty()) {
+                        OutlinedButton(
+                            onClick = { showAbsentSmsDialog = true },
+                            border = BorderStroke(1.5.dp, JudoRed),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = JudoRed),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("admin_absent_sms_btn")
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.Message,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "SMS aux parents des absents (${absentMemberObjects.size})",
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+
+                    val pendingName = pendingToggleName
+                    if (pendingName != null) {
+                        val accent = if (pendingTogglePresent) JudoSuccess else MaterialTheme.colorScheme.error
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = accent.copy(alpha = 0.12f),
+                            border = BorderStroke(1.dp, accent),
+                            modifier = Modifier.fillMaxWidth().testTag("hist_correction_confirm")
+                        ) {
+                            Column(
+                                modifier = Modifier.padding(12.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Text(
+                                    text = if (pendingTogglePresent) {
+                                        "Confirmer le pointage de $pendingName ?"
+                                    } else {
+                                        "Confirmer l'absence de $pendingName ?"
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold, color = accent)
+                                )
+                                Text(
+                                    text = "Cette action modifie l'émargement de la séance ${session.categoryName} du ${session.dateString}.",
+                                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                )
                                 Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickable { applyCorrection(member, !isPresentNow) }
-                                        .padding(8.dp)
-                                        .testTag("hist_correction_row_${member.id}"),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                    ) {
-                                        JudokaAvatar(
-                                            name = member.fullName,
-                                            belt = member.belt,
-                                            photoUrl = member.photoUrl,
-                                            sizeDp = 30
-                                        )
-                                        Column {
-                                            Text(
-                                                text = member.fullName,
-                                                style = MaterialTheme.typography.bodyMedium.copy(
-                                                    fontWeight = FontWeight.SemiBold, fontSize = 14.sp
-                                                )
-                                            )
-                                            Text(
-                                                text = "Ceinture ${member.beltName.lowercase()}",
-                                                style = MaterialTheme.typography.bodySmall.copy(
-                                                    fontSize = 11.sp,
-                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                                )
-                                            )
-                                        }
+                                    TextButton(onClick = { pendingToggleName = null }) {
+                                        Text("Annuler", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = if (isPresentNow) {
-                                            JudoSuccess.copy(alpha = 0.15f)
-                                        } else {
-                                            MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
-                                        }
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Button(
+                                        onClick = { confirmToggle() },
+                                        colors = ButtonDefaults.buttonColors(containerColor = accent)
                                     ) {
-                                        Text(
-                                            text = if (isPresentNow) "Présent ✓" else "Absent",
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontSize = 12.sp,
-                                                fontWeight = FontWeight.Bold,
-                                                color = if (isPresentNow) JudoSuccess else MaterialTheme.colorScheme.error
-                                            ),
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
-                                        )
+                                        Text(if (pendingTogglePresent) "Marquer présent" else "Marquer absent")
                                     }
                                 }
                             }
                         }
                     }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = { sessionToCorrect = null },
-                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
-                ) {
-                    Text("Fermer")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { sessionToCorrect = null }) {
-                    Text("Annuler", color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        Button(
+                            onClick = { selectedSessionDetail = null },
+                            colors = ButtonDefaults.buttonColors(containerColor = JudoRed)
+                        ) {
+                            Text("Fermer")
+                        }
+                    }
                 }
             }
-        )
+        }
     }
     }
 }
@@ -1088,6 +996,78 @@ fun AdminSessionsScreen(
                 sessionToEdit = null
             }
         )
+    }
+}
+
+@Composable
+private fun AttendanceEditableRow(
+    name: String,
+    member: Member?,
+    isPresent: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onClick)
+            .padding(6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(
+            modifier = Modifier.weight(1f),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (member != null) {
+                JudokaAvatar(
+                    name = member.fullName,
+                    belt = member.belt,
+                    photoUrl = member.photoUrl,
+                    sizeDp = 30
+                )
+            }
+            Column {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp
+                    )
+                )
+                Text(
+                    text = if (member != null) {
+                        "Ceinture ${member.beltName.lowercase()}"
+                    } else {
+                        "Hors effectif de la s?ance"
+                    },
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                )
+            }
+        }
+        Surface(
+            shape = RoundedCornerShape(8.dp),
+            color = if (isPresent) {
+                JudoSuccess.copy(alpha = 0.15f)
+            } else {
+                MaterialTheme.colorScheme.error.copy(alpha = 0.15f)
+            }
+        ) {
+            Text(
+                text = if (isPresent) "Pr?sent ?" else "Absent",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = if (isPresent) JudoSuccess else MaterialTheme.colorScheme.error
+                ),
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+            )
+        }
     }
 }
 

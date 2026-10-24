@@ -66,6 +66,7 @@ dependencies {
   implementation(libs.mlkit.barcode)
   implementation(libs.mlkit.text.recognition)
   implementation(libs.mlkit.face.detection)
+  implementation(libs.onnxruntime.android)
   implementation(libs.androidx.compose.material.icons.core)
   implementation(libs.androidx.compose.material.icons.extended)
   implementation(libs.androidx.compose.material3)
@@ -83,6 +84,8 @@ dependencies {
   implementation(libs.kotlinx.coroutines.core)
   implementation(libs.kotlinx.coroutines.play.services)
   implementation(libs.okhttp)
+
+  testImplementation(libs.junit)
 
   debugImplementation(libs.androidx.compose.ui.tooling)
 

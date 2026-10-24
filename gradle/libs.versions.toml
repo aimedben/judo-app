@@ -44,6 +44,7 @@ zxing = "3.5.3"
 mlkitBarcode = "17.3.0"
 mlkitTextRecognition = "16.0.1"
 mlkitFaceDetection = "16.1.7"
+onnxRuntime = "1.20.0"
 
 
 [libraries]
@@ -103,6 +104,7 @@ zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" 
 mlkit-barcode = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkitBarcode" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 mlkit-face-detection = { group = "com.google.mlkit", name = "face-detection", version.ref = "mlkitFaceDetection" }
+onnxruntime-android = { group = "com.microsoft.onnxruntime", name = "onnxruntime-android", version.ref = "onnxRuntime" }
 
 
 [plugins]

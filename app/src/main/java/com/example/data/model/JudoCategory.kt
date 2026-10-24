@@ -18,7 +18,7 @@ data class JudoCategory(
     /** Vrai si un athlete du groupe [memberGroupCode] appartient a cette categorie. */
     fun covers(memberGroupCode: String?): Boolean = GroupCodes.matches(groupCode, memberGroupCode)
 
-    /** Libelle lisible des groupes couverts (ex. « Cadets (U18), Juniors / Seniors »). */
+    /** Libelle lisible des groupes couverts (ex. « Adults (U18) »). */
     val groupLabel: String
         get() = GroupCodes.label(groupCode)
 }
@@ -38,6 +38,9 @@ data class ActiveTrainingSession(
     val coach2Name: String,
     val coach2Present: Boolean,
     val isExternalScannerMode: Boolean = true,
+    /** Mode de pointage de la seance. `isExternalScannerMode` reste lu pour compatibilite. */
+    val pointageMode: PointageMode =
+        if (isExternalScannerMode) PointageMode.DOUCHETTE else PointageMode.CAMERA_QR,
     /** Wall-clock timestamp when this session was created. Used to isolate the
      *  pointage of a new session from any earlier check-in made the same day. */
     val startTimestamp: Long = System.currentTimeMillis()
