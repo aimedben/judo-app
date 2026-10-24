@@ -50,6 +50,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -60,11 +62,14 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -88,8 +93,11 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.data.model.Belt
 import com.example.data.model.CoachProfile
+import com.example.data.model.CoachUser
+import com.example.data.model.JudoCategory
 import com.example.data.model.JudoGroup
 import com.example.data.model.Member
+import com.example.util.GroupCodes
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoGoldLight
 import com.example.ui.theme.JudoRed
@@ -170,6 +178,8 @@ fun AddEditMemberDialog(
     initialMember: Member?,
     initialExtractedInfo: ExtractedMemberInfo? = null,
     coachProfile: CoachProfile = CoachProfile(),
+    coaches: List<CoachUser> = emptyList(),
+    categories: List<JudoCategory> = emptyList(),
     onRequestScanCard: (() -> Unit)? = null,
     onEditCoachProfile: (() -> Unit)? = null,
     findDuplicate: (Member) -> Member? = { null },
@@ -238,6 +248,24 @@ fun AddEditMemberDialog(
     }
     var isBeltExpanded by remember { mutableStateOf(false) }
 
+    /**
+     * VRAI coach référent : l'entraîneur actif dont les catégories affectées couvrent
+     * le groupe du membre (édition) ou du groupe suggéré (création). Retombe sur le
+     * profil coach connecté si aucune categorie/entraineur ne correspond.
+     */
+    val memberGroupForCoach = initialMember?.group ?: selectedGroup
+    val referentCoach = remember(memberGroupForCoach, coaches, categories) {
+        val coveringCategoryNames = categories
+            .filter { GroupCodes.matches(it.groupCode, memberGroupForCoach.code) }
+            .map { it.name.trim() }
+            .toHashSet()
+        coaches.firstOrNull { coach ->
+            coach.isActive && coach.assignedCategories.any { name ->
+                coveringCategoryNames.contains(name.trim())
+            }
+        }
+    }
+
     var isFromCardScan by remember {
         mutableStateOf(initialExtractedInfo != null)
     }
@@ -247,6 +275,48 @@ fun AddEditMemberDialog(
     var isRealCardScanDialogOpen by remember { mutableStateOf(false) }
 
     var errorMsg by remember { mutableStateOf("") }
+
+    // Sélecteur de date (calendrier) pour la date de naissance.
+    var showBirthDatePicker by remember { mutableStateOf(false) }
+    if (showBirthDatePicker) {
+        val utc = java.util.TimeZone.getTimeZone("UTC")
+        val initialMillis = runCatching {
+            val parser = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+            parser.timeZone = utc
+            parser.parse(birthDate)?.time
+        }.getOrNull()
+        val datePickerState = rememberDatePickerState(
+            initialSelectedDateMillis = initialMillis
+        )
+        DatePickerDialog(
+            onDismissRequest = { showBirthDatePicker = false },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        datePickerState.selectedDateMillis?.let { millis ->
+                            val formatter = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            formatter.timeZone = utc
+                            val iso = formatter.format(java.util.Date(millis))
+                            birthDate = iso
+                            selectedGroup = JudoGroup.fromBirthDate(iso)
+                            errorMsg = ""
+                        }
+                        showBirthDatePicker = false
+                    },
+                    modifier = Modifier.testTag("birth_date_picker_confirm")
+                ) {
+                    Text("Valider")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBirthDatePicker = false }) {
+                    Text("Annuler")
+                }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
     var submitAttempted by remember { mutableStateOf(false) }
 
     // Android zero-permission Photo Picker for Adherent
@@ -754,19 +824,32 @@ fun AddEditMemberDialog(
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     OutlinedTextField(
                         value = birthDate,
-                        onValueChange = {
-                            birthDate = it
-                            // Dynamically update recommended group based on new birth year
-                            selectedGroup = JudoGroup.fromBirthDate(it)
-                        },
-                        label = { Text("Date de Naissance (AAAA-MM-JJ) *") },
-                        placeholder = { Text("2013-01-06") },
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Date de Naissance *") },
+                        placeholder = { Text("Choisir dans le calendrier") },
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.Cake, contentDescription = null)
                         },
+                        trailingIcon = {
+                            IconButton(
+                                onClick = { showBirthDatePicker = true },
+                                modifier = Modifier.testTag("birth_date_picker_open")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CalendarToday,
+                                    contentDescription = "Choisir la date de naissance"
+                                )
+                            }
+                        },
+                        isError = submitAttempted && birthDate.isBlank(),
+                        supportingText = if (submitAttempted && birthDate.isBlank()) {
+                            { Text("Date de naissance obligatoire") }
+                        } else null,
                         singleLine = true,
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { showBirthDatePicker = true }
                             .testTag("input_birth_date")
                     )
 
@@ -1007,7 +1090,14 @@ fun AddEditMemberDialog(
                                     .background(Color(0xFF212121))
                                     .border(2.dp, JudoGold, CircleShape)
                             ) {
-                                if (coachProfile.photoUrl.isNotBlank()) {
+                                if (!referentCoach?.photoPath.isNullOrBlank()) {
+                                    AsyncImage(
+                                        model = referentCoach?.photoPath,
+                                        contentDescription = "Coach",
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize().clip(CircleShape)
+                                    )
+                                } else if (coachProfile.photoUrl.isNotBlank()) {
                                     AsyncImage(
                                         model = coachProfile.photoUrl,
                                         contentDescription = "Coach",
@@ -1025,11 +1115,15 @@ fun AddEditMemberDialog(
                             }
                             Column {
                                 Text(
-                                    text = "Coach Référent: ${coachProfile.name}",
+                                    text = "Coach Référent: ${referentCoach?.name ?: coachProfile.name}",
                                     style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
                                 )
                                 Text(
-                                    text = "${coachProfile.danGrade} • ${coachProfile.clubName}",
+                                    text = if (referentCoach != null) {
+                                        "${referentCoach.grade} • ${referentCoach.assignedCategories.joinToString(", ")}"
+                                    } else {
+                                        "${coachProfile.danGrade} • ${coachProfile.clubName}"
+                                    },
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -1163,7 +1257,9 @@ fun AddEditMemberDialog(
                                     beltName = selectedBelt.name,
                                     qrCode = cleanQr,
                                     status = status,
-                                    registrationDate = "2026-09-01",
+                                    registrationDate = java.text.SimpleDateFormat(
+                                        "yyyy-MM-dd", java.util.Locale.US
+                                    ).format(java.util.Date()),
                                     photoUrl = resolvedPhoto,
                                     notes = notes.trim()
                                 )

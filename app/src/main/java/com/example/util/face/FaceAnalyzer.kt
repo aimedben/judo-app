@@ -1,6 +1,7 @@
 package com.example.util.face
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -15,12 +16,18 @@ import com.google.mlkit.vision.face.FaceDetectorOptions
 import com.google.mlkit.vision.face.FaceLandmark
 import java.util.concurrent.Executors
 
-/** Resultat d'une frame analysee. Ne contient AUCUN embedding ni image. */
+/** Resultat d'une frame analysee. Ne contient AUCUN embedding ni image hors snapshot valide. */
 data class FaceObservation(
     val decision: FaceDecision,
     val hint: String?,
     val faceDetected: Boolean,
-    val fps: Float
+    val fps: Float,
+    /**
+     * Recadrage rectangulaire (4:3) centre sur le visage, produit UNIQUEMENT quand la
+     * reconnaissance est validee ([FaceDecision.Certain]). Il sert a l'affichage 2 s dans
+     * le cadre video ; la vue charge de le recycler apres usage.
+     */
+    val snapshot: Bitmap? = null
 )
 
 /**
@@ -31,8 +38,8 @@ data class FaceObservation(
  *  - 7 fps maximum, KEEP_ONLY_LATEST cote CameraX (configure dans le composant camera) ;
  *  - aucune frame ecrite sur disque, aucune image conservee apres analyse (bitmap recycle) ;
  *  - aucun log d'embedding, de score nominal ou d'identite ;
- *  - `autoCheckInEnabled = false` : une decision Certain ne pointe rien, elle declenche une
- *    confirmation humaine dans l'UI.
+ *  - `autoCheckInEnabled = false` : une decision Certain NE POINTE RIEN ici ; l'UI hote
+ *    orchestre le pointage via le pipeline metier existant (doublons, cotisation...).
  */
 class FaceAnalyzer(
     private val embedder: FaceEmbedder,
@@ -156,10 +163,10 @@ class FaceAnalyzer(
         }
 
         val embedding = embedder.embed(aligned)
-        bitmap.recycle()
         aligned.recycle()
 
         if (embedding == null) {
+            bitmap.recycle()
             publish(FaceObservation(FaceDecision.Unknown, "Reconnaissance indisponible", true, tick()))
             return
         }
@@ -170,12 +177,56 @@ class FaceAnalyzer(
         val smoothScores = scoreGallery(smoothed)
         val scores = mergeScores(rawScores, smoothScores)
         val decision = controller.evaluate(trackId, scores)
+        // Recadrage 4:3 centree sur le visage, produit UNIQUEMENT si le pointage est
+        // valide (Certain). Jamais d'image avant une reconnaissance confirmee.
+        val snapshot = if (decision is FaceDecision.Certain) {
+            faceCrop(bitmap, face.boundingBox)
+        } else {
+            null
+        }
+        bitmap.recycle()
         val hint = when (decision) {
             is FaceDecision.Certain -> null
             is FaceDecision.Uncertain -> "Vérifiez : plusieurs visages proches"
             FaceDecision.Unknown -> if (scores.isEmpty()) "Aucun visage enrôlé dans ce groupe" else "Visage non reconnu"
         }
-        publish(FaceObservation(decision, hint, true, tick()))
+        publish(FaceObservation(decision, hint, true, tick(), snapshot))
+    }
+
+    /**
+     * Recadrage horizontal 4:3 centre sur le visage detecte, avec marge autour de la
+     * boite englobante. Retourne null si le recadrage est impossible (visage sur le bord).
+     */
+    private fun faceCrop(bitmap: Bitmap, box: Rect): Bitmap? {
+        if (bitmap.isRecycled || bitmap.width <= 0 || bitmap.height <= 0) return null
+        val margin = 0.55f
+        var w = (box.width() * (1f + margin * 2f)).toInt().coerceAtLeast(1)
+        var h = (box.height() * (1f + margin * 2f)).toInt().coerceAtLeast(1)
+        // Format 4:3 horizontal (borne de pointage) : on elargit la dimension la plus courte.
+        if (w * 3 / 4f > h) h = (w * 3 / 4f).toInt() else w = (h * 4 / 3f).toInt()
+        val cropW = minOf(w, bitmap.width)
+        val cropH = minOf(h, bitmap.height)
+        if (cropW <= 0 || cropH <= 0) return null
+        val left = (box.exactCenterX() - cropW / 2f).toInt().coerceIn(0, bitmap.width - cropW)
+        val top = (box.exactCenterY() - cropH / 2f).toInt().coerceIn(0, bitmap.height - cropH)
+        val crop = runCatching { Bitmap.createBitmap(bitmap, left, top, cropW, cropH) }.getOrNull()
+            ?: return null
+        // Limite la memoire du snapshot affiche 2 s.
+        val maxWidth = 720
+        return if (crop.width > maxWidth) {
+            val scaled = runCatching {
+                Bitmap.createScaledBitmap(
+                    crop,
+                    maxWidth,
+                    (crop.height * (maxWidth.toFloat() / crop.width)).toInt().coerceAtLeast(1),
+                    true
+                )
+            }.getOrNull()
+            if (scaled != null && scaled !== crop) crop.recycle()
+            scaled
+        } else {
+            crop
+        }
     }
 
     private fun landmarksOf(face: Face, imageWidth: Int): List<FacePoint>? {

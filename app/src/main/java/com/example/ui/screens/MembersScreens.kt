@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.Attendance
 import com.example.data.model.AttendanceWithMember
 import com.example.data.model.CoachProfile
+import com.example.data.model.CoachUser
 import com.example.data.model.JudoCategory
 import com.example.data.model.JudoGroup
 import com.example.data.model.Member
@@ -83,6 +84,7 @@ fun MembersScreen(
     onSelectMember: (Long) -> Unit,
     onSaveMember: (Member) -> Unit,
     categories: List<JudoCategory> = emptyList(),
+    coaches: List<CoachUser> = emptyList(),
     searchQuery: String = "",
     onSearchQueryChange: (String) -> Unit = {},
     selectedGroupFilter: String = "ALL",
@@ -146,6 +148,8 @@ fun MembersScreen(
         AddEditMemberDialog(
             initialMember = null,
             coachProfile = coachProfile,
+            coaches = coaches,
+            categories = categories,
             onEditCoachProfile = onEditCoachProfile,
             findDuplicate = { candidate -> MemberDuplicates.find(members, candidate) },
             onSave = { newMember ->

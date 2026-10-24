@@ -381,6 +381,12 @@ fun AlreadyCheckedInDialog(
     existingTime: String,
     onDismiss: () -> Unit
 ) {
+    // Auto-fermeture apres 2 s : le coach n'a pas besoin de toucher l'ecran,
+    // le flux de pointage reprend immediatement.
+    LaunchedEffect(Unit) {
+        delay(2000L)
+        onDismiss()
+    }
     Dialog(onDismissRequest = onDismiss) {
         Card(
             shape = RoundedCornerShape(20.dp),

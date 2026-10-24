@@ -60,5 +60,6 @@ enum class AdminSubScreen {
     ATTENDANCE_OVERVIEW,
     EXPORTS,
     SETTINGS,
-    CLOUD_SYNC
+    CLOUD_SYNC,
+    ABSENCE_NOTIFICATIONS
 }

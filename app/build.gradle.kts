@@ -14,6 +14,11 @@ android {
     targetSdk = 36
     versionCode = 2
     versionName = "1.0.0"
+    // Tablettes du club ARM uniquement : maxi 2 ABIs au lieu des 4 tests
+    // (x86/x86_64 supprimés = ~90 Mo décompressés en moins sur l'appareil).
+    ndk {
+      abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+    }
   }
 
   signingConfigs {

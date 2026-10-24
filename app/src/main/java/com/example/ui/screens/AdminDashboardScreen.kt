@@ -86,6 +86,7 @@ fun AdminDashboardScreen(
     coaches: List<CoachUser>,
     pastSessions: List<PastTrainingSession>,
     notifications: List<AdminNotification>,
+    scheduledSessions: List<com.example.data.model.ScheduledTrainingSession> = emptyList(),
     isDarkTheme: Boolean,
     onNavigateToAthletes: () -> Unit,
     onNavigateToCoaches: () -> Unit,
@@ -127,34 +128,35 @@ fun AdminDashboardScreen(
     val activeCategoriesCount = categories.count { it.isActive }
     val sessionsCompletedCount = pastSessions.size
 
-    val (periodPresents, periodTotalExpected, attendanceRate) = remember(statPeriod, allAttendance, todayAttendance, allMembers) {
-        val totalActive = allMembers.count { it.status == "ACTIF" }
-        when (statPeriod) {
-            StatPeriod.TODAY -> {
-                val pres = todayAttendance.size
-                val rate = if (totalActive > 0) ((pres.toDouble() / totalActive) * 100).toInt() else 0
-                Triple(pres, totalActive, rate)
-            }
+    // Calcul du taux de presence CONSISTENT sur toutes les periodes :
+    // presences uniques (membre x jour) / (jours de seance tenus x membres ACTIFS).
+    // Corrige les 3 bugs precedents : doublons comptes plusieurs fois (TODAY),
+    // semantique heterogene (distinct n'importe quand pour la saison),
+    // et periodes hors saison officielle incluses.
+    val (periodPresents, periodTotalExpected, attendanceRate) = remember(statPeriod, allAttendance, allMembers, clubSettings) {
+        val officialStart = clubSettings.officialStartDate
+        val todayStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val periodRows = when (statPeriod) {
+            StatPeriod.TODAY -> allAttendance.filter { it.dateString == todayStr }
             StatPeriod.WEEK -> {
-                val now = System.currentTimeMillis()
-                val weekAgo = now - (7L * 24 * 3600 * 1000)
-                val pres = allAttendance.filter { it.timestamp >= weekAgo }.map { it.memberId }.distinct().size
-                val rate = if (totalActive > 0) ((pres.toDouble() / totalActive) * 100).toInt().coerceAtMost(100) else 0
-                Triple(pres, totalActive, rate)
+                val cutoff = System.currentTimeMillis() - (7L * 24 * 3600 * 1000)
+                allAttendance.filter { it.timestamp >= cutoff }
             }
             StatPeriod.MONTH -> {
-                val now = System.currentTimeMillis()
-                val monthAgo = now - (30L * 24 * 3600 * 1000)
-                val pres = allAttendance.filter { it.timestamp >= monthAgo }.map { it.memberId }.distinct().size
-                val rate = if (totalActive > 0) ((pres.toDouble() / totalActive) * 100).toInt().coerceAtMost(100) else 0
-                Triple(pres, totalActive, rate)
+                val cutoff = System.currentTimeMillis() - (30L * 24 * 3600 * 1000)
+                allAttendance.filter { it.timestamp >= cutoff }
             }
-            else -> {
-                val pres = allAttendance.map { it.memberId }.distinct().size
-                val rate = if (totalActive > 0) ((pres.toDouble() / totalActive) * 100).toInt().coerceAtMost(100) else 0
-                Triple(pres, totalActive, rate)
-            }
-        }
+            else -> allAttendance
+        }.filter { com.example.util.OfficialPeriod.isOfficial(it.dateString, officialStart) }
+
+        val activeAthletes = allMembers.count { it.status == "ACTIF" }
+        val sessionsHeld = periodRows.map { it.dateString }.distinct().size
+        val presentPairs = periodRows.map { "${it.memberId}|${it.dateString}" }.distinct().size
+        val expected = sessionsHeld * activeAthletes
+        val rate = if (expected > 0) {
+            ((presentPairs.toDouble() / expected) * 100).toInt().coerceAtMost(100)
+        } else 0
+        Triple(presentPairs, expected, rate)
     }
 
     Column(modifier = modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
@@ -165,6 +167,21 @@ fun AdminDashboardScreen(
             notifications = notifications,
             isDarkTheme = isDarkTheme,
             pendingSyncCount = pendingSyncCount,
+            absenceAlertCount = remember(allMembers, allAttendance, scheduledSessions, clubSettings) {
+                val now = java.util.Calendar.getInstance().apply {
+                    timeInMillis = System.currentTimeMillis()
+                }
+                com.example.util.AbsenceAlerts.membersWithMonthAbsences(
+                    members = allMembers,
+                    attendances = allAttendance,
+                    scheduledSessions = scheduledSessions,
+                    officialStartDate = clubSettings.officialStartDate,
+                    todayMillis = now.timeInMillis,
+                    year = now.get(java.util.Calendar.YEAR),
+                    month0 = now.get(java.util.Calendar.MONTH),
+                    threshold = 1
+                ).size
+            },
             onOpenNotifications = onOpenNotifications,
             onOpenSettings = onNavigateToSettings,
             onOpenCloudSync = onOpenCloudSync,
@@ -500,8 +517,17 @@ fun AdminDashboardScreen(
                         }
                     }
 
-                    // Newly registered athletes
-                    if (allMembers.isNotEmpty()) {
+                    // Newly registered athletes : les PLUS RECENTS uniquement
+                    // (date d'inscription, puis id d'ajout le plus grand).
+                    val recentAddedMembers = remember(allMembers) {
+                        allMembers
+                            .sortedWith(
+                                compareByDescending<Member> { it.registrationDate }
+                                    .thenByDescending { it.id }
+                            )
+                            .take(3)
+                    }
+                    if (recentAddedMembers.isNotEmpty()) {
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
                             text = "Nouveaux athlètes enregistrés :",
@@ -511,7 +537,7 @@ fun AdminDashboardScreen(
                             )
                         )
 
-                        allMembers.take(3).forEach { member ->
+                        recentAddedMembers.forEach { member ->
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
                                 color = MaterialTheme.colorScheme.surface,

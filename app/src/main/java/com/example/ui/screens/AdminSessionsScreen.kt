@@ -532,12 +532,10 @@ fun AdminSessionsScreen(
         var detailTab by remember(session.id) { mutableStateOf(0) }
         var showAbsentSmsDialog by remember(session.id) { mutableStateOf(false) }
         var searchQuery by remember(session.id) { mutableStateOf("") }
-        var scanBuffer by remember(session.id) { mutableStateOf("") }
         var scanFeedback by remember(session.id) { mutableStateOf<String?>(null) }
         var scanFeedbackError by remember(session.id) { mutableStateOf(false) }
         var pendingToggleName by remember(session.id) { mutableStateOf<String?>(null) }
         var pendingTogglePresent by remember(session.id) { mutableStateOf(false) }
-        val scanFocusRequester = remember { FocusRequester() }
 
         val sessionRoster = remember(members, session.id, session.groupCode) {
             AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
@@ -572,52 +570,6 @@ fun AdminSessionsScreen(
             scanFeedbackError = false
             scanFeedback = "$name a été marqué(e) ${if (markPresent) "présent(e)" else "absent(e)"} ✓"
             pendingToggleName = null
-        }
-
-        fun handleScan(raw: String) {
-            val payload = raw.trim()
-            if (payload.isBlank()) return
-            val qr = MemberQr.normalize(payload)
-            if (qr.isBlank()) {
-                scanFeedbackError = true
-                scanFeedback = "Lecture non reconnue : le code de la carte n'a pas été trouvé."
-                return
-            }
-            val member = sessionRoster.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
-                ?: qr.removePrefix(MemberQr.PREFIX).toLongOrNull()
-                    ?.let { id -> sessionRoster.firstOrNull { it.id == id } }
-                ?: members.firstOrNull { it.qrCode.equals(qr, ignoreCase = true) }
-            when {
-                member == null -> {
-                    scanFeedbackError = true
-                    scanFeedback = "Carte $qr : aucune fiche n'a été trouvée avec ce code."
-                }
-                AbsentSmsNotifier.membersOfGroup(listOf(member), session.groupCode).isEmpty() -> {
-                    scanFeedbackError = true
-                    scanFeedback = "${member.fullName} n'appartient pas à la séance ${session.categoryName}."
-                }
-                isPresent(member) -> {
-                    scanFeedbackError = false
-                    scanFeedback = "${member.fullName} est déjà marqué(e) présent(e) pour cette séance."
-                }
-                else -> {
-                    scanFeedbackError = false
-                    scanFeedback = "Carte lue : confirmez le pointage de ${member.fullName}."
-                    requestToggle(member.fullName, true)
-                }
-            }
-        }
-
-        // Une douchette sans suffixe Enter termine quand le flux de caracteres se calme.
-        LaunchedEffect(scanBuffer) {
-            val pending = scanBuffer
-            if (pending.isNotBlank()) {
-                delay(450)
-                if (scanBuffer == pending) {
-                    scanBuffer = ""
-                    handleScan(pending)
-                }
-            }
         }
 
         val presentRows: List<Pair<Member?, String>> = buildList {
@@ -745,38 +697,13 @@ fun AdminSessionsScreen(
                     }
 
                     OutlinedTextField(
-                        value = scanBuffer,
-                        onValueChange = { value ->
-                            scanFeedback = null
-                            if (value.contains('\n')) {
-                                value.split('\n').filter { it.isNotBlank() }.forEach { handleScan(it.trim()) }
-                                scanBuffer = value.substringAfterLast('\n')
-                            } else {
-                                scanBuffer = value
-                            }
-                        },
-                        label = { Text("Douchette : scanner la carte") },
-                        placeholder = { Text("Scannez la carte pour pointer l'athlète") },
-                        leadingIcon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) },
-                        trailingIcon = {
-                            IconButton(onClick = { scanFocusRequester.requestFocus() }) {
-                                Icon(Icons.Default.CenterFocusWeak, contentDescription = "Récapturer la douchette")
-                            }
-                        },
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        placeholder = { Text("Rechercher judoka...") },
+                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                         singleLine = true,
-                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                        keyboardActions = KeyboardActions(
-                            onDone = {
-                                if (scanBuffer.isNotBlank()) {
-                                    handleScan(scanBuffer)
-                                    scanBuffer = ""
-                                }
-                            }
-                        ),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(scanFocusRequester)
-                            .testTag("hist_scan_field")
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().testTag("hist_correction_search_field")
                     )
 
                     scanFeedback?.let { message ->
@@ -787,7 +714,7 @@ fun AdminSessionsScreen(
                             } else {
                                 JudoSuccess.copy(alpha = 0.12f)
                             },
-                            modifier = Modifier.fillMaxWidth().testTag("hist_scan_feedback")
+                            modifier = Modifier.fillMaxWidth().testTag("hist_correction_feedback")
                         ) {
                             Text(
                                 text = message,
@@ -799,16 +726,6 @@ fun AdminSessionsScreen(
                             )
                         }
                     }
-
-                    OutlinedTextField(
-                        value = searchQuery,
-                        onValueChange = { searchQuery = it },
-                        placeholder = { Text("Rechercher judoka...") },
-                        leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth().testTag("hist_correction_search_field")
-                    )
 
                     Text(
                         text = "Touchez un athlète pour changer sa présence (confirmation demandée) :",

@@ -1096,14 +1096,74 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /**
      * Pointages officiels uniquement : tout ce qui precede la date de debut du pointage
      * officiel (reglage club) est exclu des statistiques, sans rien supprimer de la base.
+     *
+     * LIAISON HISTORIQUE -> FICHE & STATS : les presents declares dans les seances
+     * validees (tableau "Historique") restent rattaches a la fiche de l'athlete et
+     * aux statistiques, memes si les lignes brutes d'attendance ont disparu
+     * (suppression d'un recapitulatif, nettoyage, ou restauration partielle).
+     * Une presence = (row attendance reelle) OU (nom present dans une seance
+     * passee du meme jour, rattache au membre par NameKey).
      */
     val allAttendance: StateFlow<List<AttendanceWithMember>> =
-        kotlinx.coroutines.flow.combine(repository.allAttendance, _clubSettings) { rows, settings ->
+        kotlinx.coroutines.flow.combine(
+            repository.allAttendance,
+            repository.getAllPastSessionsFlow(),
+            repository.allMembers,
+            _clubSettings
+        ) { rows, pastSessions, members, settings ->
             val start = settings.officialStartDate
-            if (start.isBlank()) rows
+            val officialRows = if (start.isBlank()) rows
             else rows.filter {
                 com.example.util.OfficialPeriod.isOfficial(it.dateString, start)
             }
+
+            // Presence par (membre, jour) deja couverte par les lignes reelles.
+            val coveredPairs = officialRows
+                .map { "${it.memberId}|${it.dateString}" }
+                .toHashSet()
+
+            val byId = members.associateBy { it.id }
+            val byName = members.associateBy { com.example.util.NameKey.canonical(it.fullName) }
+
+            val synthetic = buildList {
+                for (session in pastSessions) {
+                    if (start.isNotBlank() &&
+                        !com.example.util.OfficialPeriod.isOfficial(session.dateString, start)
+                    ) continue
+                    val names = session.presentMembersJoined
+                        .split(";")
+                        .map { it.trim() }
+                        .filter { it.isNotBlank() }
+                    val dayTimestamp = runCatching {
+                        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                            .parse(session.dateString)?.time ?: 0L
+                    }.getOrDefault(0L)
+                    for (name in names) {
+                        val member = byName[com.example.util.NameKey.canonical(name)] ?: continue
+                        val key = "${member.id}|${session.dateString}"
+                        // Les rows reelles du meme (membre, jour) sont conservees
+                        // telles quelles : seule la presence manquante est synthetisee.
+                        if (coveredPairs.contains(key)) continue
+                        add(
+                            AttendanceWithMember(
+                                attendanceId = 0L,
+                                memberId = member.id,
+                                firstName = member.firstName,
+                                lastName = member.lastName,
+                                groupCode = member.groupCode,
+                                beltName = member.beltName,
+                                dateString = session.dateString,
+                                timeString = session.startTime,
+                                timestamp = dayTimestamp,
+                                qrCode = member.qrCode,
+                                phone = member.phone,
+                                photoUrl = member.photoUrl
+                            )
+                        )
+                    }
+                }
+            }
+            officialRows + synthetic
         }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private val _lastScanned = MutableStateFlow<AttendanceWithMember?>(null)

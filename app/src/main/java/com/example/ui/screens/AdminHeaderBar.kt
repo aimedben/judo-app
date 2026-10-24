@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SportsMartialArts
@@ -69,6 +70,7 @@ fun AdminHeaderBar(
     notifications: List<AdminNotification> = emptyList(),
     isDarkTheme: Boolean = false,
     pendingSyncCount: Int = 0,
+    absenceAlertCount: Int = 0,
     onOpenNotifications: () -> Unit = {},
     onOpenSettings: () -> Unit,
     onOpenCloudSync: () -> Unit = {},
@@ -154,13 +156,13 @@ fun AdminHeaderBar(
                     )
 
                     HeaderActionButton(
-                        icon = Icons.Default.CloudSync,
-                        label = if (showLabels) "Cloud" else null,
-                        contentDescription = "Supabase Cloud & Sauvegardes",
-                        tint = if (pendingSyncCount > 0) JudoGoldBright else Color.White,
-                        showBadge = pendingSyncCount > 0,
-                        onClick = onOpenCloudSync,
-                        modifier = Modifier.testTag("admin_header_cloud_sync_btn")
+                        icon = Icons.Default.Notifications,
+                        label = if (showLabels) "Alertes" else null,
+                        contentDescription = "Notifications d'absences (3 absences et plus ce mois-ci)",
+                        tint = if (absenceAlertCount > 0) JudoGoldBright else Color.White,
+                        showBadge = absenceAlertCount > 0,
+                        onClick = onOpenNotifications,
+                        modifier = Modifier.testTag("admin_header_notifications_btn")
                     )
 
                     // Admin profile avatar + menu

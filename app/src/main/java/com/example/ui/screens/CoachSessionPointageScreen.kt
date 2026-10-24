@@ -16,6 +16,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -87,9 +90,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -115,6 +120,7 @@ import com.example.util.face.FaceAnalyzer
 import com.example.util.face.FaceEngine
 import com.example.util.face.FaceObservation
 import kotlinx.coroutines.delay
+import android.graphics.Bitmap
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -225,6 +231,8 @@ fun CoachSessionPointageScreen(
     sessionAttendances: List<AttendanceWithMember>,
     scanFeedback: CoachScanFeedback?,
     onOpenScanner: () -> Unit,
+    // Ouvre le pointage facial PLEIN ECRAN (meme pattern que le scan QR).
+    onOpenFacePointage: () -> Unit = {},
     onManualCheckInMember: (Member) -> Unit,
     onFinishSession: () -> Unit,
     onDismissFeedback: () -> Unit,
@@ -245,15 +253,17 @@ fun CoachSessionPointageScreen(
     var isManualCheckInDialogOpen by remember { mutableStateOf(false) }
     var statDetailMode by remember { mutableStateOf<StatDetailMode?>(null) }
 
-    // Mode de pointage de la seance : le VISAGE est le mode par defaut. La douchette et la
-    // camera QR restent accessibles en un tap via les boutons de mode.
-    val context = LocalContext.current
+    // Mode de pointage de la seance : le VISAGE est le mode par defaut (plein ecran,
+    // meme pattern que le scan QR). La douchette et la camera QR restent accessibles
+    // en un tap via les boutons de mode.
     var pointageMode by remember(session.categoryId, session.startTimestamp) {
         mutableStateOf(PointageMode.FACE)
     }
     val isFaceMode = pointageMode == PointageMode.FACE
+
     // La permission est remontee par l'apercu camera : le moteur n'est "actif" que si
     // modele + hash valides, permission accordee et galerie du groupe non vide.
+    val context = LocalContext.current
     var cameraGranted by remember { mutableStateOf(false) }
     val faceStatus = remember(faceGallery.size, cameraGranted) {
         FaceEngine.status(context, cameraGranted, faceGallery.size)
@@ -262,7 +272,21 @@ fun CoachSessionPointageScreen(
     // Analyse temps reel : creee uniquement en mode Visage quand le moteur est actif.
     var analyzer by remember { mutableStateOf<FaceAnalyzer?>(null) }
     var observation by remember { mutableStateOf<FaceObservation?>(null) }
-    var pendingFaceMember by remember { mutableStateOf<Member?>(null) }
+
+    // Snapshot du visage valide affiche 2 s en surimpression, image recyclee.
+    var faceSnapshot by remember { mutableStateOf<Bitmap?>(null) }
+    val lastSnapshotRef = remember { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(faceSnapshot) {
+        val previous = lastSnapshotRef.value
+        if (previous != null && previous !== faceSnapshot) {
+            runCatching { previous.recycle() }
+        }
+        lastSnapshotRef.value = faceSnapshot
+        if (faceSnapshot != null) {
+            delay(2000L)
+            faceSnapshot = null
+        }
+    }
 
     // Halo "visage detecte" : chaque passage vide->visage allume un anneau vert durant 2 s.
     var faceDetectedGlow by remember { mutableStateOf(false) }
@@ -277,10 +301,6 @@ fun CoachSessionPointageScreen(
     val glowWidth by animateFloatAsState(
         targetValue = if (faceDetectedGlow) 4f else 2f,
         label = "face_glow_width"
-    )
-    val glowScale by animateFloatAsState(
-        targetValue = if (faceDetectedGlow) 1.05f else 1f,
-        label = "face_glow_scale"
     )
     val glowColor by animateColorAsState(
         targetValue = if (faceDetectedGlow) JudoSuccess else MaterialTheme.colorScheme.outline.copy(alpha = 0.35f),
@@ -299,11 +319,14 @@ fun CoachSessionPointageScreen(
                     initialGallery = faceGallery,
                     onResult = { result ->
                         observation = result
-                        // autoCheckInEnabled = false : meme "certain", rien n'est pointe
-                        // sans confirmation explicite du coach.
-                        if (result.decision is FaceDecision.Certain && pendingFaceMember == null) {
-                            pendingFaceMember = categoryMembers.firstOrNull {
-                                it.id == (result.decision as FaceDecision.Certain).memberId
+                        // Certain => pointage immediat via le pipeline metier existant.
+                        // Pendant l'affichage du snapshot (2 s) aucun nouveau declenchement.
+                        if (result.decision is FaceDecision.Certain && faceSnapshot == null) {
+                            val memberId = (result.decision as FaceDecision.Certain).memberId
+                            val member = categoryMembers.firstOrNull { it.id == memberId }
+                            if (member != null) {
+                                onManualCheckInMember(member)
+                                result.snapshot?.let { snap -> faceSnapshot = snap }
                             }
                         }
                     }
@@ -316,6 +339,9 @@ fun CoachSessionPointageScreen(
         onDispose {
             analyzer?.close()
             analyzer = null
+            lastSnapshotRef.value?.let { runCatching { it.recycle() } }
+            lastSnapshotRef.value = null
+            faceSnapshot = null
         }
     }
  
@@ -336,7 +362,7 @@ fun CoachSessionPointageScreen(
             else -> {
                 // Affichage immédiat : aucune attente de radar avant la photo.
                 displayedFeedback = scanFeedback
-                val holdMs = if (scanFeedback is CoachScanFeedback.WrongCategory) 2500L else 2200L
+                val holdMs = if (scanFeedback is CoachScanFeedback.WrongCategory) 2500L else 1500L
                 delay(holdMs)
                 displayedFeedback = null
                 onDismissFeedback()
@@ -490,7 +516,51 @@ fun CoachSessionPointageScreen(
             )
         }
  
-        // 1. & 3. Central Scan Zone with Concentric Red Ripples & Real-Time Feedback
+        // Selecteur compact des modes de pointage : Visage par defaut, puis QR et douchette.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            PointageModeChip(
+                label = "Visage",
+                icon = Icons.Default.Face,
+                active = isFaceMode,
+                activeColor = Color(0xFF1976D2),
+                testTag = "coach_face_mode_btn",
+                modifier = Modifier.weight(1f),
+                onClick = { pointageMode = PointageMode.FACE }
+            )
+            PointageModeChip(
+                label = "QR code",
+                icon = Icons.Default.PhotoCamera,
+                active = false,
+                activeColor = JudoRed,
+                testTag = "coach_scan_judoka_btn",
+                modifier = Modifier.weight(1f),
+                onClick = onOpenScanner
+            )
+            PointageModeChip(
+                label = "Douchette",
+                icon = Icons.Default.QrCodeScanner,
+                active = pointageMode == PointageMode.DOUCHETTE,
+                activeColor = Color(0xFF6A4AA0),
+                testTag = "coach_douchette_mode_btn",
+                modifier = Modifier.weight(1f),
+                onClick = { pointageMode = PointageMode.DOUCHETTE }
+            )
+            PointageModeChip(
+                label = "Manuel",
+                icon = Icons.Default.PersonAdd,
+                active = false,
+                activeColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                testTag = "coach_manual_checkin_btn",
+                modifier = Modifier.weight(1f),
+                onClick = { isManualCheckInDialogOpen = true }
+            )
+        }
+
+        // Zone principale de pointage : cadre video rectangulaire large (4:3) en mode
+        // Visage, radar de scan + retour central en modes QR / douchette.
         Card(
             shape = RoundedCornerShape(20.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -515,6 +585,23 @@ fun CoachSessionPointageScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                if (isFaceMode) {
+                    // Petit ecran par defaut : cadre video integre avec reconnaissance
+                    // en continu. Le bouton "plein ecran" (coin haut-droit du cadre)
+                    // bascule vers l'ecran plein ecran, optionnel.
+                    FaceVideoFrame(
+                        analyzer = analyzer,
+                        onPermissionChanged = { cameraGranted = it },
+                        faceStatusReady = faceStatus.ready,
+                        faceStatusReason = faceStatus.reason,
+                        hint = observation?.hint,
+                        faceSnapshot = faceSnapshot,
+                        glowColor = glowColor,
+                        glowWidth = glowWidth,
+                        onOpenFullscreen = onOpenFacePointage,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                } else {
                 // Radar Animation
                 ConcentricRipplesRadar(
                     isScanning = shownFeedback == null && !isFaceMode,
@@ -618,53 +705,25 @@ fun CoachSessionPointageScreen(
                             }
                         }
                         null -> {
-                            if (isFaceMode) {
-                                // Mode Visage : apercu camera (PiP) avec halo qui s'allume
-                                // 2 s a chaque detection de visage. Aucune frame analyse
-                                // sans modele installe.
-                                Box(
-                                    modifier = Modifier
-                                        .size(156.dp)
-                                        .graphicsLayer {
-                                            scaleX = glowScale
-                                            scaleY = glowScale
-                                        }
-                                        .border(
-                                            width = glowWidth.dp,
-                                            color = glowColor,
-                                            shape = CircleShape
-                                        )
-                                        .clip(CircleShape)
-                                ) {
-                                    FaceCameraPreview(
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .clip(CircleShape)
-                                            .testTag("face_camera_preview"),
-                                        analyzer = analyzer,
-                                        onPermissionChanged = { cameraGranted = it }
-                                    )
-                                }
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(54.dp)
-                                        .clip(CircleShape)
-                                        .background(JudoRed),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(
-                                        imageVector = Icons.Default.QrCodeScanner,
-                                        contentDescription = "QR Code",
-                                        tint = Color.White,
-                                        modifier = Modifier.size(30.dp)
-                                    )
-                                }
+                            Box(
+                                modifier = Modifier
+                                    .size(54.dp)
+                                    .clip(CircleShape)
+                                    .background(JudoRed),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.QrCodeScanner,
+                                    contentDescription = "QR Code",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(30.dp)
+                                )
                             }
                         }
                     }
                 }
  
+                
                 // Text status / Athlete feedback
                 AnimatedContent(
                     targetState = shownFeedback,
@@ -795,36 +854,7 @@ fun CoachSessionPointageScreen(
                                 // Aucun message : un QR invalide est ignoré silencieusement.
                             }
                             null -> {
-                                if (isFaceMode) {
-                                    Text(
-                                        text = "Mode visage",
-                                        style = MaterialTheme.typography.titleLarge.copy(
-                                            fontWeight = FontWeight.Black,
-                                            letterSpacing = 0.5.sp
-                                        ),
-                                        color = MaterialTheme.colorScheme.onBackground
-                                    )
-                                    Text(
-                                        text = when {
-                                            !faceStatus.ready -> faceStatus.reason
-                                            observation?.hint != null -> observation!!.hint!!
-                                            else -> "Présentez votre visage à la caméra"
-                                        },
-                                        style = MaterialTheme.typography.bodyMedium.copy(
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                                        ),
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(horizontal = 16.dp)
-                                    )
-                                    Text(
-                                        text = "Aucune photo n'est conservée : seules des empreintes chiffrées restent sur cette tablette.",
-                                        style = MaterialTheme.typography.labelSmall.copy(
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
-                                        ),
-                                        textAlign = TextAlign.Center,
-                                        modifier = Modifier.padding(horizontal = 16.dp)
-                                    )
-                                } else {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text(
                                         text = if (pointageMode == PointageMode.DOUCHETTE) "Douchette prête" else "Prêt à scanner",
                                         style = MaterialTheme.typography.titleLarge.copy(
@@ -850,53 +880,67 @@ fun CoachSessionPointageScreen(
                         }
                     }
                 }
+                }
             }
         }
  
-        // Actions Row: selecteur de mode (Visage par defaut | Camera | Douchette) + manuel.
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        // Retour discret en mode Visage apres un pointage (jamais de fenetre,
+        // l'interface continue sans interruption).
+        val faceInlineFeedback = shownFeedback
+        AnimatedVisibility(
+            visible = isFaceMode && faceInlineFeedback != null && faceInlineFeedback !is CoachScanFeedback.Invalid,
+            enter = fadeIn(tween(150)),
+            exit = fadeOut(tween(150))
         ) {
-            PointageModeChip(
-                label = "Visage",
-                icon = Icons.Default.Face,
-                active = isFaceMode,
-                activeColor = Color(0xFF1976D2),
-                testTag = "coach_face_mode_btn",
-                modifier = Modifier.weight(1f),
-                onClick = { pointageMode = PointageMode.FACE }
-            )
-            PointageModeChip(
-                label = "Caméra",
-                icon = Icons.Default.PhotoCamera,
-                active = false,
-                activeColor = JudoRed,
-                testTag = "coach_scan_judoka_btn",
-                modifier = Modifier.weight(1f),
-                onClick = onOpenScanner
-            )
-            PointageModeChip(
-                label = "Douchette",
-                icon = Icons.Default.QrCodeScanner,
-                active = pointageMode == PointageMode.DOUCHETTE,
-                activeColor = Color(0xFF6A4AA0),
-                testTag = "coach_douchette_mode_btn",
-                modifier = Modifier.weight(1f),
-                onClick = { pointageMode = PointageMode.DOUCHETTE }
-            )
-            PointageModeChip(
-                label = "Manuel",
-                icon = Icons.Default.PersonAdd,
-                active = false,
-                activeColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                testTag = "coach_manual_checkin_btn",
-                modifier = Modifier.weight(1f),
-                onClick = { isManualCheckInDialogOpen = true }
-            )
-        }
- 
-        // Recent Scans / Check-ins — liste compacte : nombre d'athletes visibles maximise.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                when (faceInlineFeedback) {
+                    is CoachScanFeedback.Success -> {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = JudoSuccess,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "${faceInlineFeedback.member.fullName} • pointé à ${faceInlineFeedback.timeString}",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = JudoSuccess
+                        )
+                    }
+                    is CoachScanFeedback.AlreadyChecked -> {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = Color(0xFF1976D2),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "${faceInlineFeedback.member.fullName} • déjà pointé à ${faceInlineFeedback.timeString}",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color(0xFF1976D2)
+                        )
+                    }
+                    is CoachScanFeedback.WrongCategory -> {
+                        Icon(
+                            imageVector = Icons.Default.Warning,
+                            contentDescription = null,
+                            tint = Color(0xFFE65100),
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Text(
+                            text = "${faceInlineFeedback.member.fullName} • catégorie non autorisée dans cette séance",
+                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                            color = Color(0xFFE65100)
+                        )
+                    }
+                    else -> {}
+                }
+            }
+        }        // Recent Scans / Check-ins — liste compacte : nombre d'athletes visibles maximise.
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -1145,52 +1189,7 @@ fun CoachSessionPointageScreen(
         )
     }
 
-    // Pointage facial : toujours confirme par le coach (autoCheckInEnabled = false).
-    val faceCandidate = pendingFaceMember
-    if (faceCandidate != null) {
-        AlertDialog(
-            onDismissRequest = {
-                pendingFaceMember = null
-                analyzer?.reset()
-            },
-            title = { Text("Visage reconnu") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        text = faceCandidate.fullName,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "Confirmer la présence de cet athlète ? Aucun pointage n'est enregistré automatiquement.",
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        onManualCheckInMember(faceCandidate)
-                        pendingFaceMember = null
-                        analyzer?.reset()
-                    },
-                    modifier = Modifier.testTag("face_confirm_checkin_btn")
-                ) {
-                    Text("Confirmer", color = JudoSuccess)
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        pendingFaceMember = null
-                        analyzer?.reset()
-                    },
-                    modifier = Modifier.testTag("face_reject_checkin_btn")
-                ) {
-                    Text("Ce n'est pas lui", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        )
-    }
+
 }
  
 /**
@@ -1768,4 +1767,131 @@ private fun AthleteStatRow(
      }
 }
 
- 
+
+/**
+ * Cadre video integre du mode Visage (petit ecran, par defaut) : reconnaissance
+ * en continu sans quitter la page. Le contour s'allume a chaque detection de
+ * visage ; le visage reconnu reste affiche 2 s avant que le flux reprenne.
+ * Le bouton "plein ecran" du coin haut-droit bascule vers la caméra plein ecran,
+ * optionnelle.
+ */
+@Composable
+private fun FaceVideoFrame(
+    analyzer: FaceAnalyzer?,
+    onPermissionChanged: (Boolean) -> Unit,
+    faceStatusReady: Boolean,
+    faceStatusReason: String,
+    hint: String?,
+    faceSnapshot: Bitmap?,
+    glowColor: Color,
+    glowWidth: Float,
+    onOpenFullscreen: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .aspectRatio(4f / 3f)
+            .testTag("face_camera_frame")
+            .clip(RoundedCornerShape(20.dp))
+            .border(width = glowWidth.dp, color = glowColor, shape = RoundedCornerShape(20.dp))
+    ) {
+        FaceCameraPreview(
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("face_camera_preview"),
+            analyzer = analyzer,
+            onPermissionChanged = onPermissionChanged
+        )
+
+        // Snapshot 2 s du visage reconnu en surimpression du flux video.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = faceSnapshot != null,
+            enter = androidx.compose.animation.fadeIn(androidx.compose.animation.core.tween(150)),
+            exit = androidx.compose.animation.fadeOut(androidx.compose.animation.core.tween(200)),
+            modifier = Modifier.matchParentSize()
+        ) {
+            val snap = faceSnapshot
+            if (snap != null && !snap.isRecycled) {
+                Image(
+                    bitmap = snap.asImageBitmap(),
+                    contentDescription = "Visage reconnu",
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { scaleX = -1f }
+                )
+            }
+        }
+
+        // Bouton plein ecran (coin haut-droit).
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = Color.Black.copy(alpha = 0.55f),
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(10.dp)
+        ) {
+            IconButton(
+                onClick = onOpenFullscreen,
+                modifier = Modifier.testTag("face_open_fullscreen_btn")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Fullscreen,
+                    contentDescription = "Ouvrir plein écran",
+                    tint = Color.White
+                )
+            }
+        }
+
+        // Badge etat moteur (haut-gauche).
+        Surface(
+            shape = RoundedCornerShape(10.dp),
+            color = Color.Black.copy(alpha = 0.45f),
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(10.dp)
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (faceStatusReady) JudoSuccess else MaterialTheme.colorScheme.error)
+                )
+                Text(
+                    text = if (faceStatusReady) "Reconnaissance active" else "Moteur indisponible",
+                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                    color = Color.White
+                )
+            }
+        }
+
+        // Barre d'indice en bas du cadre (jamais de modale).
+        Surface(
+            color = Color.Black.copy(alpha = 0.45f),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+        ) {
+            Text(
+                text = when {
+                    faceSnapshot != null -> ""
+                    hint != null -> hint
+                    !faceStatusReady -> faceStatusReason
+                    else -> "Présentez votre visage au centre du cadre"
+                },
+                style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Medium),
+                color = Color.White,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            )
+        }
+    }
+}

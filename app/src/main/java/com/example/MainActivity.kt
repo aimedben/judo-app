@@ -94,6 +94,7 @@ import com.example.ui.components.CheckInConfirmationDialog
 import com.example.ui.components.CoachProfileDialog
 import com.example.ui.components.ConfirmAddMemberDialog
 import com.example.ui.components.RegistrationOnlyDialog
+import com.example.ui.screens.AdminAbsenceNotificationsScreen
 import com.example.ui.screens.AdminAttendanceOverviewScreen
 import com.example.ui.screens.AdminCategoriesScreen
 import com.example.ui.screens.AdminCoachesScreen
@@ -106,8 +107,9 @@ import com.example.ui.screens.CategorySelectionScreen
 import com.example.ui.screens.CoachAthletesScreen
 import com.example.ui.screens.CoachHistoryScreen
 import com.example.ui.screens.CoachMinimalHomeScreen
-import com.example.ui.screens.CoachProfileScreen
 import com.example.ui.screens.CoachDedicatedScannerScreen
+import com.example.ui.screens.CoachFacePointageScreen
+import com.example.ui.screens.CoachProfileScreen
 import com.example.ui.screens.CoachSessionPointageScreen
 import com.example.ui.screens.CoachSessionPreparationScreen
 import com.example.ui.screens.CoachSessionSummaryScreen
@@ -274,6 +276,8 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     var isSessionSummaryShown by remember { mutableStateOf(false) }
     var currentCoachTab by remember { mutableStateOf(CoachTab.SESSION) }
     var isCoachCameraScannerOpen by remember { mutableStateOf(false) }
+    // Pointage facial plein ecran (meme pattern que le scanner QR plein ecran).
+    var isCoachFacePointageOpen by remember { mutableStateOf(false) }
 
     val coachProfile by viewModel.coachProfile.collectAsState()
     val allMembers by viewModel.allMembers.collectAsState()
@@ -471,7 +475,20 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
 
     // 2. Coach Flow with selected category & dedicated Coach Navbar
     if (userRole == UserRole.COACH && selectedCategory != null) {
-        // Dedicated Full-Screen Scanner Page: occupies entire app surface without navbar, navigation rail, stats, or menus
+        // Ecran plein ecran de reconnaissance faciale (comme le scanner QR entier).
+        if (sessionForSelectedCategory != null && isCoachFacePointageOpen) {
+            CoachFacePointageScreen(
+                session = sessionForSelectedCategory!!,
+                categoryMembers = categoryMembers,
+                faceGallery = faceGallery,
+                onManualCheckInMember = { member -> viewModel.manualCheckIn(member.id) },
+                scanFeedback = coachScanFeedback,
+                onDismissFeedback = { viewModel.clearCoachScanFeedback() },
+                onBack = { isCoachFacePointageOpen = false }
+            )
+            return
+        }
+
         if (sessionForSelectedCategory != null && isCoachCameraScannerOpen) {
             CoachDedicatedScannerScreen(
                 session = sessionForSelectedCategory!!,
@@ -518,6 +535,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             sessionAttendances = sessionAttendances,
                             scanFeedback = coachScanFeedback,
                             onOpenScanner = { isCoachCameraScannerOpen = true },
+                            onOpenFacePointage = { isCoachFacePointageOpen = true },
                             onManualCheckInMember = { member -> viewModel.manualCheckIn(member.id) },
                             onNumeroScanned = { code -> code?.let { viewModel.onQrScanned(it) } },
                             onFinishSession = { isSessionSummaryShown = true },
@@ -914,7 +932,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             viewModel.selectCategory(null)
                             viewModel.setUserRole(UserRole.COACH)
                         },
-                        onOpenNotifications = { isNotificationsDialogOpen = true },
+                        onOpenNotifications = {
+                            activeAdminSubScreen = AdminSubScreen.ABSENCE_NOTIFICATIONS
+                        },
                         onOpenProfileDialog = { isAdminProfileDialogOpen = true },
                         onAddCoach = { viewModel.addCoach(it) },
                         onUpdateCoach = { viewModel.updateCoach(it) },
@@ -937,7 +957,11 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onDuplicateScheduledSession = { s -> viewModel.duplicateScheduledSession(s) },
                         onDeleteScheduledSession = { id, scope -> viewModel.deleteScheduledSession(id, scope) },
                         onDeletePastSessions = { ids -> viewModel.deletePastSessions(ids) },
-                        onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) }
+                        onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) },
+                        membersSearchQuery = membersSearchQuery,
+                        onMembersSearchQueryChange = { membersSearchQuery = it },
+                        membersGroupFilter = membersGroupFilter,
+                        onMembersGroupFilterChange = { membersGroupFilter = it }
                     )
                 }
             }
@@ -1045,7 +1069,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             viewModel.selectCategory(null)
                             viewModel.setUserRole(UserRole.COACH)
                         },
-                        onOpenNotifications = { isNotificationsDialogOpen = true },
+                        onOpenNotifications = {
+                            activeAdminSubScreen = AdminSubScreen.ABSENCE_NOTIFICATIONS
+                        },
                         onOpenProfileDialog = { isAdminProfileDialogOpen = true },
                         onAddCoach = { viewModel.addCoach(it) },
                         onUpdateCoach = { viewModel.updateCoach(it) },
@@ -1069,7 +1095,11 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onDuplicateScheduledSession = { s -> viewModel.duplicateScheduledSession(s) },
                         onDeleteScheduledSession = { id, scope -> viewModel.deleteScheduledSession(id, scope) },
                         onDeletePastSessions = { ids -> viewModel.deletePastSessions(ids) },
-                        onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) }
+                        onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) },
+                        membersSearchQuery = membersSearchQuery,
+                        onMembersSearchQueryChange = { membersSearchQuery = it },
+                        membersGroupFilter = membersGroupFilter,
+                        onMembersGroupFilterChange = { membersGroupFilter = it }
                     )
                 }
             }
@@ -1155,6 +1185,8 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
             initialMember = null,
             initialExtractedInfo = scannedMemberForCreation,
             coachProfile = coachProfile,
+            coaches = coaches,
+            categories = categories,
             onEditCoachProfile = { isCoachProfileDialogOpen = true },
             onRequestScanCard = {
                 activeStatFilter = null
@@ -1176,6 +1208,8 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
         AddEditMemberDialog(
             initialMember = memberToEdit,
             coachProfile = coachProfile,
+            coaches = coaches,
+            categories = categories,
             onEditCoachProfile = { isCoachProfileDialogOpen = true },
             findDuplicate = { candidate -> MemberDuplicates.find(allMembers, candidate) },
             getFaceEnrollmentCount = { memberId ->
@@ -1281,7 +1315,12 @@ private fun AppScreenContent(
     onTestConnection: suspend () -> Result<String> = { Result.success("") },
     onPerformSync: () -> Unit = {},
     onGenerateBackup: suspend () -> String = { "" },
-    onRestoreBackup: suspend (String) -> Result<String> = { Result.success("") }
+    onRestoreBackup: suspend (String) -> Result<String> = { Result.success("") },
+    // Recherche + filtre du groupe hoistés depuis l'onglet Athlètes (conservés entre onglets).
+    membersSearchQuery: String = "",
+    onMembersSearchQueryChange: (String) -> Unit = {},
+    membersGroupFilter: String = "ALL",
+    onMembersGroupFilterChange: (String) -> Unit = {}
 ) {
     // 1. Member Profile Detail Screen
     if (selectedMemberId != null) {
@@ -1402,6 +1441,20 @@ private fun AppScreenContent(
             )
             return
         }
+        AdminSubScreen.ABSENCE_NOTIFICATIONS -> {
+            AdminAbsenceNotificationsScreen(
+                allMembers = allMembers,
+                allAttendance = allAttendance,
+                scheduledSessions = scheduledSessions,
+                clubSettings = clubSettings,
+                onSelectMember = { memberId ->
+                    onAdminSubScreenChange(AdminSubScreen.NONE)
+                    onSelectMember(memberId)
+                },
+                onBack = { onAdminSubScreenChange(AdminSubScreen.NONE) }
+            )
+            return
+        }
         AdminSubScreen.NONE -> Unit
     }
 
@@ -1418,6 +1471,7 @@ private fun AppScreenContent(
                 coaches = coaches,
                 pastSessions = pastSessions,
                 notifications = notifications,
+                scheduledSessions = scheduledSessions,
                 isDarkTheme = isDarkTheme,
                 onNavigateToAthletes = { onNavigateToTab(ScreenTab.MEMBERS) },
                 onNavigateToCoaches = { onNavigateToTab(ScreenTab.COACHES) },
@@ -1445,10 +1499,11 @@ private fun AppScreenContent(
                 onSelectMember = onSelectMember,
                 onSaveMember = onSaveMember,
                 categories = categories,
+                coaches = coaches,
                 searchQuery = membersSearchQuery,
-                onSearchQueryChange = { membersSearchQuery = it },
+                onSearchQueryChange = onMembersSearchQueryChange,
                 selectedGroupFilter = membersGroupFilter,
-                onSelectedGroupFilterChange = { membersGroupFilter = it }
+                onSelectedGroupFilterChange = onMembersGroupFilterChange
             )
         }
         ScreenTab.COACHES -> {

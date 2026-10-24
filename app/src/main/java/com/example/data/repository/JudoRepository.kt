@@ -58,6 +58,10 @@ class JudoRepository(
     val allAttendance: Flow<List<AttendanceWithMember>> = attendanceDao.getAllAttendanceWithMembers()
     val recentAttendance: Flow<List<AttendanceWithMember>> = attendanceDao.getRecentAttendance(15)
 
+    /** Seances validees : source de verite de l' historique (present|absent par nom). */
+    fun getAllPastSessionsFlow(): Flow<List<PastSessionEntity>> =
+        clubDao?.getAllPastSessionsFlow() ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
     fun getTodayDateString(): String {
         val sdf = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault())
         return sdf.format(Date())
