@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -34,6 +35,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material.icons.filled.EventNote
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MedicalServices
@@ -60,6 +62,9 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
@@ -882,9 +887,9 @@ fun AddEditCoachDialog(
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-fun AddEditCategoryDialog(
+    @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+    @Composable
+    fun AddEditCategoryDialog(
     initialCategory: JudoCategory?,
     coachesList: List<CoachUser>,
     onSave: (JudoCategory) -> Unit,
@@ -895,6 +900,8 @@ fun AddEditCategoryDialog(
     // Aucun nom en dur : les coachs proposes viennent de la base locale (table coaches).
     var coach1Name by remember { mutableStateOf(initialCategory?.coach1Name ?: (coachesList.firstOrNull()?.name ?: "")) }
     var coach2Name by remember { mutableStateOf(initialCategory?.coach2Name ?: (coachesList.getOrNull(1)?.name ?: "")) }
+    var isCoach1Expanded by remember { mutableStateOf(false) }
+    var isCoach2Expanded by remember { mutableStateOf(false) }
     val initialDescription = initialCategory?.description.orEmpty()
     val defaultYears = remember(initialCategory?.id) {
         CategoryYears.defaultsFor(initialCategory?.groupCode ?: "U13")
@@ -1030,21 +1037,85 @@ fun AddEditCategoryDialog(
                     )
                 }
 
-                OutlinedTextField(
-                    value = coach1Name,
-                    onValueChange = { coach1Name = it },
-                    label = { Text("Coach référent principal") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                // Coach referents : LISTE DEROUANTE des coachs existants
+                // (aucune saisie libre : on ne peut choisir que parmi les coachs).
+                ExposedDropdownMenuBox(
+                    expanded = isCoach1Expanded,
+                    onExpandedChange = { isCoach1Expanded = !isCoach1Expanded }
+                ) {
+                    OutlinedTextField(
+                        value = coach1Name.ifBlank { "À définir" },
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Coach référent principal") },
+                        leadingIcon = {
+                            Icon(Icons.Default.SportsMartialArts, contentDescription = null)
+                        },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isCoach1Expanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = isCoach1Expanded,
+                        onDismissRequest = { isCoach1Expanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Aucun") },
+                            onClick = {
+                                coach1Name = ""
+                                isCoach1Expanded = false
+                            }
+                        )
+                        coachesList.forEach { coach ->
+                            DropdownMenuItem(
+                                text = { Text(coach.name, fontWeight = FontWeight.Bold) },
+                                onClick = {
+                                    coach1Name = coach.name
+                                    isCoach1Expanded = false
+                                },
+                                modifier = Modifier.testTag("category_coach1_option_${coach.id}")
+                            )
+                        }
+                    }
+                }
 
-                OutlinedTextField(
-                    value = coach2Name,
-                    onValueChange = { coach2Name = it },
-                    label = { Text("Coach référent secondaire") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                ExposedDropdownMenuBox(
+                    expanded = isCoach2Expanded,
+                    onExpandedChange = { isCoach2Expanded = !isCoach2Expanded }
+                ) {
+                    OutlinedTextField(
+                        value = coach2Name.ifBlank { "À définir" },
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Coach référent secondaire") },
+                        leadingIcon = {
+                            Icon(Icons.Default.SportsMartialArts, contentDescription = null)
+                        },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isCoach2Expanded) },
+                        modifier = Modifier.fillMaxWidth().menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = isCoach2Expanded,
+                        onDismissRequest = { isCoach2Expanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Aucun") },
+                            onClick = {
+                                coach2Name = ""
+                                isCoach2Expanded = false
+                            }
+                        )
+                        coachesList.forEach { coach ->
+                            DropdownMenuItem(
+                                text = { Text(coach.name, fontWeight = FontWeight.Bold) },
+                                onClick = {
+                                    coach2Name = coach.name
+                                    isCoach2Expanded = false
+                                },
+                                modifier = Modifier.testTag("category_coach2_option_${coach.id}")
+                            )
+                        }
+                    }
+                }
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

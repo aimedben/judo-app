@@ -61,9 +61,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.CoachUser
 import com.example.data.model.JudoCategory
+import com.example.data.model.Member
+import com.example.data.model.PastTrainingSession
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.util.CoachNameKey
 import coil.compose.AsyncImage
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
@@ -71,6 +74,8 @@ import coil.compose.AsyncImage
 fun AdminCoachesScreen(
     coaches: List<CoachUser>,
     categories: List<JudoCategory>,
+    pastSessions: List<PastTrainingSession> = emptyList(),
+    members: List<Member> = emptyList(),
     onAddCoach: (CoachUser) -> Unit,
     onUpdateCoach: (CoachUser) -> Unit,
     onToggleCoachActive: (String) -> Unit,
@@ -80,6 +85,35 @@ fun AdminCoachesScreen(
     var coachToEdit by remember { mutableStateOf<CoachUser?>(null) }
     var isAddDialogOpen by remember { mutableStateOf(false) }
     var coachToDelete by remember { mutableStateOf<CoachUser?>(null) }
+    var selectedCoachId by remember { mutableStateOf<String?>(null) }
+
+    // ===== Fiche coach detaillee (page plein ecran) =====
+    selectedCoachId?.let { selectedId ->
+        coaches.find { it.id == selectedId }?.let { selectedCoach ->
+            CoachDetailScreen(
+                coach = selectedCoach,
+                categories = categories,
+                pastSessions = pastSessions,
+                members = members,
+                onBack = { selectedCoachId = null }
+            )
+            return
+        }
+    }
+
+    /**
+     * VRAI nombre de séances animées par coach : compté sur l'historique des
+     * séances validées (le coach est présent comme referent principal et/ou
+     * secondaire). La valeur stockee `sessionsCount` n'est plus utilisee.
+     */
+    val realSessionCounts = remember(coaches, pastSessions) {
+        coaches.associate { coach ->
+            coach.id to pastSessions.count { session ->
+                (session.coach1Present && CoachNameKey.same(session.coach1Name, coach.name)) ||
+                    (session.coach2Present && CoachNameKey.same(session.coach2Name, coach.name))
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -132,7 +166,8 @@ fun AdminCoachesScreen(
                         containerColor = if (coach.isActive) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
                     ),
                     border = CardDefaults.outlinedCardBorder(),
-                    modifier = Modifier.fillMaxWidth()
+                    onClick = { selectedCoachId = coach.id },
+                    modifier = Modifier.fillMaxWidth().testTag("coach_card_${coach.id}")
                 ) {
                     Column(
                         modifier = Modifier
@@ -266,7 +301,7 @@ fun AdminCoachesScreen(
                                         tint = JudoGold
                                     )
                                     Text(
-                                        text = "${coach.sessionsCount} séances",
+                                        text = "${realSessionCounts[coach.id] ?: 0} séances",
                                         style = MaterialTheme.typography.labelMedium.copy(
                                             color = JudoGold,
                                             fontWeight = FontWeight.Bold

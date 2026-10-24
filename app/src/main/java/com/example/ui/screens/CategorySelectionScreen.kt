@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -65,7 +66,6 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -88,9 +88,10 @@ import java.util.Locale
  * Welcome / landing screen shown to coaches before a category has been picked.
  *
  * Premium judo identity: the club banner as a dark hero header (with the emblem and
- * the dark-mode toggle) and a warm off-white canvas with dramatic "duel" category
- * cards: the two referent coaches face to face, red corner vs blue corner, with the
- * real coach portraits coming from the admin > Coachs tab (local `photoPath`).
+ * the dark-mode toggle) and a warm off-white canvas with "duo" category cards: the
+ * two referent coaches side by side as a TEAM (the category is framed by both, no
+ * duel), with the real coach portraits coming from the admin > Coachs tab
+ * (local `photoPath`).
  */
 @Composable
 fun CategorySelectionScreen(
@@ -165,7 +166,7 @@ fun CategorySelectionScreen(
                 } else {
                     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                         // Progressive columns: 1 on very narrow phones, 2 on phones, 3-4 on
-                        // tablets / landscape. The duel cards need width to stay readable.
+                        // tablets / landscape. The duo cards need width to stay readable.
                         val columns = when {
                             maxWidth >= 1000.dp -> 4
                             maxWidth >= 620.dp -> 3
@@ -250,83 +251,51 @@ private fun HeroHeader(
     }
 }
 
-/** Red / blue cinematic split painted behind the two coach portraits. */
+/** Fond commun aux deux portraits : nuit neutre, accent doré, aucun duel. */
 @Composable
-private fun DuelBackdrop() {
+private fun DuoBackdrop() {
     Canvas(modifier = Modifier.fillMaxSize()) {
         val w = size.width
         val h = size.height
-        val splitTop = w * 0.56f
-        val splitBottom = w * 0.44f
 
-        // Red corner (left) — deep crimson lit from the top-left.
-        val left = Path().apply {
-            moveTo(0f, 0f)
-            lineTo(splitTop, 0f)
-            lineTo(splitBottom, h)
-            lineTo(0f, h)
-            close()
-        }
-        drawPath(
-            path = left,
-            brush = Brush.linearGradient(
-                colors = listOf(Color(0xFF8E1010), Color(0xFF3A0505), Color(0xFF0A0A0F)),
-                start = androidx.compose.ui.geometry.Offset(0f, 0f),
-                end = androidx.compose.ui.geometry.Offset(w * 0.7f, h)
-            )
-        )
+        // Night base shared by both portraits.
+        drawRect(brush = Brush.verticalGradient(listOf(Color(0xFF15151E), Color(0xFF0A0A0F))))
 
-        // Blue corner (right) — electric blue lit from the top-right.
-        val right = Path().apply {
-            moveTo(splitTop, 0f)
-            lineTo(w, 0f)
-            lineTo(w, h)
-            lineTo(splitBottom, h)
-            close()
-        }
-        drawPath(
-            path = right,
-            brush = Brush.linearGradient(
-                colors = listOf(Color(0xFF0B4FA8), Color(0xFF06203F), Color(0xFF0A0A0F)),
-                start = androidx.compose.ui.geometry.Offset(w, 0f),
-                end = androidx.compose.ui.geometry.Offset(w * 0.3f, h)
-            )
-        )
-
-        // Diagonal seam between the two fighters.
-        drawLine(
-            color = Color.White.copy(alpha = 0.20f),
-            start = androidx.compose.ui.geometry.Offset(splitTop, 0f),
-            end = androidx.compose.ui.geometry.Offset(splitBottom, h),
-            strokeWidth = 2.dp.toPx()
-        )
-        // Soft glow behind the "VS" so the seam reads as a spotlight.
+        // Soft golden glow behind the "+" badge : reads as "équipe", pas opposition.
         drawCircle(
             brush = Brush.radialGradient(
-                colors = listOf(Color.White.copy(alpha = 0.16f), Color.Transparent),
+                colors = listOf(JudoGoldBright.copy(alpha = 0.20f), Color.Transparent),
                 center = androidx.compose.ui.geometry.Offset(w / 2f, h / 2f),
-                radius = w * 0.34f
+                radius = w * 0.36f
             ),
-            radius = w * 0.34f,
+            radius = w * 0.36f,
             center = androidx.compose.ui.geometry.Offset(w / 2f, h / 2f)
+        )
+
+        // Thin golden seam (séparateur) between the two portraits.
+        drawLine(
+            color = JudoGoldBright.copy(alpha = 0.35f),
+            start = androidx.compose.ui.geometry.Offset(w / 2f, h * 0.16f),
+            end = androidx.compose.ui.geometry.Offset(w / 2f, h * 0.74f),
+            strokeWidth = 1.dp.toPx()
         )
     }
 }
 
-private enum class DuelSide { LEFT, RIGHT }
+private enum class DuoSide { LEFT, RIGHT }
 
 /**
- * One fighter of the card: portrait (or an initials fallback when no photo has been
- * uploaded yet), colour cast, role label and full coach name.
+ * Un des deux coachs du duo : portrait (ou initials fallback si pas encore de photo),
+ * meallure dorée commune (pas de couleur d'opposition), role et nom complet.
  */
 @Composable
-private fun DuelPortrait(
+private fun DuoPortrait(
     name: String,
     coach: CoachUser?,
-    side: DuelSide,
+    side: DuoSide,
     modifier: Modifier = Modifier
 ) {
-    val accent = if (side == DuelSide.LEFT) Color(0xFFFF5252) else Color(0xFF64B5F6)
+    val accent = JudoGoldBright
     val photoModel = coach?.photoPath.orEmpty()
     var photoFailed by remember(photoModel) { mutableStateOf(false) }
     val showPhoto = photoModel.isNotBlank() && !photoFailed
@@ -340,15 +309,14 @@ private fun DuelPortrait(
                 onError = { photoFailed = true },
                 modifier = Modifier.fillMaxSize()
             )
-            // Colour cast: red / blue lighting over the portrait.
+            // Low-key scolorisation identique pour les deux cotes.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                (if (side == DuelSide.LEFT) Color(0xFFD32F2F) else Color(0xFF1976D2))
-                                    .copy(alpha = 0.34f),
+                                Color.White.copy(alpha = 0.04f),
                                 Color.Transparent,
                                 Color.Black.copy(alpha = 0.70f)
                             )
@@ -363,7 +331,7 @@ private fun DuelPortrait(
                     .background(
                         Brush.verticalGradient(
                             colors = listOf(
-                                accent.copy(alpha = 0.26f),
+                                accent.copy(alpha = 0.20f),
                                 Color(0xFF0A0A0F)
                             )
                         )
@@ -397,14 +365,14 @@ private fun DuelPortrait(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
-                .padding(horizontal = 6.dp, vertical = 9.dp),
+                .padding(horizontal = if (side == DuoSide.LEFT) 6.dp else 10.dp, vertical = 9.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(3.dp)
         ) {
             Surface(
                 shape = RoundedCornerShape(5.dp),
-                color = accent.copy(alpha = 0.22f),
-                border = BorderStroke(1.dp, accent.copy(alpha = 0.55f))
+                color = accent.copy(alpha = 0.18f),
+                border = BorderStroke(1.dp, accent.copy(alpha = 0.60f))
             ) {
                 Text(
                     text = "COACH",
@@ -433,52 +401,41 @@ private fun DuelPortrait(
     }
 }
 
-/** Big brush-style "VS" medallion in the middle of the duel. */
+/** Medaillon "+" or : les deux coachs encadrent la catégorie ENSEMBLE. */
 @Composable
-private fun VsBadge(modifier: Modifier = Modifier) {
+private fun DuoBadge(modifier: Modifier = Modifier) {
     Box(
-        modifier = modifier.size(52.dp),
+        modifier = modifier.size(46.dp),
         contentAlignment = Alignment.Center
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
-                .graphicsLayer { rotationZ = 45f }
-                .background(Color(0xFF0A0A0F), RoundedCornerShape(12.dp))
-                .clip(RoundedCornerShape(12.dp))
+                .size(40.dp)
+                .background(Color(0xFF0A0A0F), CircleShape)
+                .border(2.dp, JudoGoldBright.copy(alpha = 0.85f), CircleShape)
+                .clip(CircleShape)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(
-                        Brush.linearGradient(
+                        Brush.verticalGradient(
                             colors = listOf(
-                                Color(0xFFFF5252).copy(alpha = 0.55f),
-                                Color.Transparent,
-                                Color(0xFF42A5F5).copy(alpha = 0.55f)
+                                JudoGoldBright.copy(alpha = 0.22f),
+                                Color.Transparent
                             )
                         )
                     )
             )
         }
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text(
-                text = "VS",
-                style = MaterialTheme.typography.titleLarge.copy(
-                    fontWeight = FontWeight.Black,
-                    fontStyle = FontStyle.Italic,
-                    fontSize = 17.sp,
-                    letterSpacing = 0.5.sp
-                ),
-                color = Color.White
-            )
-            Box(
-                modifier = Modifier
-                    .width(18.dp)
-                    .height(2.dp)
-                    .background(JudoGoldBright, RoundedCornerShape(2.dp))
-            )
-        }
+        Text(
+            text = "+",
+            style = MaterialTheme.typography.titleLarge.copy(
+                fontWeight = FontWeight.Black,
+                fontSize = 21.sp
+            ),
+            color = JudoGoldBright
+        )
     }
 }
 
@@ -533,35 +490,35 @@ private fun CategoryCard(
             .semantics {
                 contentDescription = buildString {
                     append(category.name)
-                    append(". ")
+                    append(". Encadrée par ")
                     append(category.coach1Name.ifBlank { "coach à définir" })
-                    append(" contre ")
+                    append(" et ")
                     append(category.coach2Name.ifBlank { "coach à définir" })
                 }
             }
             .testTag("category_card_${category.id}")
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
-            DuelBackdrop()
+            DuoBackdrop()
 
-            // The two fighters, separated by the central VS lane.
+            // Les deux coachs du duo, séparés par une fine ligne dorée.
             Row(modifier = Modifier.fillMaxSize()) {
-                DuelPortrait(
+                DuoPortrait(
                     name = category.coach1Name,
                     coach = coachLeft,
-                    side = DuelSide.LEFT,
+                    side = DuoSide.LEFT,
                     modifier = Modifier.weight(1f)
                 )
-                Spacer(modifier = Modifier.width(46.dp))
-                DuelPortrait(
+                Spacer(modifier = Modifier.width(34.dp))
+                DuoPortrait(
                     name = category.coach2Name,
                     coach = coachRight,
-                    side = DuelSide.RIGHT,
+                    side = DuoSide.RIGHT,
                     modifier = Modifier.weight(1f)
                 )
             }
 
-            VsBadge(modifier = Modifier.align(Alignment.Center))
+            DuoBadge(modifier = Modifier.align(Alignment.Center))
 
             // Header: club icon + category name + group badge, over a top scrim.
             Box(

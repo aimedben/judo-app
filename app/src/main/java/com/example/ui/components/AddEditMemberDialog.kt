@@ -241,6 +241,20 @@ fun AddEditMemberDialog(
                 ?: if (birthDate.isNotBlank()) JudoGroup.fromBirthDate(birthDate) else JudoGroup.MINIMES
         )
     }
+    // Vraie CATEGORIE du membre (admin > categories), synchronisee au chargement
+    // avec celle reconnue depuis son groupCode.
+    var selectedCategory by remember {
+        mutableStateOf(initialMember?.let { m -> categories.firstOrNull { it.covers(m.groupCode) } })
+    }
+    // Categories actives triees dans l'ordre judo (plus jeunes d'abord).
+    val activeCategoryOptions = remember(categories) {
+        categories.filter { it.isActive }.sortedWith(
+            compareBy(
+                { JudoGroup.fromString(it.groupCode).ordinal },
+                { it.name.lowercase() }
+            )
+        )
+    }
     var isGroupExpanded by remember { mutableStateOf(false) }
 
     var selectedBelt by remember {
@@ -299,6 +313,11 @@ fun AddEditMemberDialog(
                             val iso = formatter.format(java.util.Date(millis))
                             birthDate = iso
                             selectedGroup = JudoGroup.fromBirthDate(iso)
+                            // La vraie categorie choisie est ignoree si elle ne
+                            // couvre plus la tranche d'age suggeree.
+                            selectedCategory = selectedCategory?.takeIf {
+                                GroupCodes.matches(it.groupCode, selectedGroup.code)
+                            }
                             errorMsg = ""
                         }
                         showBirthDatePicker = false
@@ -880,16 +899,18 @@ fun AddEditMemberDialog(
                 // ==========================================
                 MemberFormSection("2", "Catégorie & grade", Icons.Default.SportsMartialArts)
 
-                // Category Dropdown
+                // Category Dropdown : les vraies CATEGORIES configurees dans admin >
+                // categories (nom officiel, ex. "Adults"), pas une liste figee de groupes.
                 ExposedDropdownMenuBox(
                     expanded = isGroupExpanded,
                     onExpandedChange = { isGroupExpanded = !isGroupExpanded }
                 ) {
                     OutlinedTextField(
-                        value = "${selectedGroup.label} (${selectedGroup.ageRange})",
+                        value = selectedCategory?.name
+                            ?: "${selectedGroup.label} (${selectedGroup.ageRange})",
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Catégorie / Tranche d'Âge") },
+                        label = { Text("Catégorie") },
                         leadingIcon = {
                             Icon(imageVector = Icons.Default.SportsMartialArts, contentDescription = null)
                         },
@@ -898,26 +919,55 @@ fun AddEditMemberDialog(
                             .fillMaxWidth()
                             .menuAnchor()
                     )
-                    ExposedDropdownMenu(
-                        expanded = isGroupExpanded,
-                        onDismissRequest = { isGroupExpanded = false }
-                    ) {
-                        JudoGroup.entries.forEach { group ->
-                            DropdownMenuItem(
-                                text = {
-                                    Row(
-                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Text(text = group.label, fontWeight = FontWeight.Bold)
-                                        Text(text = "(${group.ageRange})", style = MaterialTheme.typography.bodySmall)
+                    if (activeCategoryOptions.isNotEmpty()) {
+                        ExposedDropdownMenu(
+                            expanded = isGroupExpanded,
+                            onDismissRequest = { isGroupExpanded = false }
+                        ) {
+                            activeCategoryOptions.forEach { category ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(text = category.name, fontWeight = FontWeight.Bold)
+                                            Text(
+                                                text = category.groupLabel,
+                                                style = MaterialTheme.typography.bodySmall
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedCategory = category
+                                        selectedGroup = JudoGroup.fromString(category.groupCode)
+                                        isGroupExpanded = false
                                     }
-                                },
-                                onClick = {
-                                    selectedGroup = group
-                                    isGroupExpanded = false
-                                }
-                            )
+                                )
+                            }
+                        }
+                    } else {
+                        ExposedDropdownMenu(
+                            expanded = isGroupExpanded,
+                            onDismissRequest = { isGroupExpanded = false }
+                        ) {
+                            JudoGroup.entries.forEach { group ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(text = group.label, fontWeight = FontWeight.Bold)
+                                            Text(text = "(${group.ageRange})", style = MaterialTheme.typography.bodySmall)
+                                        }
+                                    },
+                                    onClick = {
+                                        selectedGroup = group
+                                        isGroupExpanded = false
+                                    }
+                                )
+                            }
                         }
                     }
                 }
@@ -1242,7 +1292,7 @@ fun AddEditMemberDialog(
                                     lastName = lastName.trim(),
                                     birthDate = cleanBirthDate,
                                     phone = cleanPhone,
-                                    groupCode = selectedGroup.code,
+                                    groupCode = selectedCategory?.groupCode ?: selectedGroup.code,
                                     beltName = selectedBelt.name,
                                     qrCode = cleanQr,
                                     status = status,
@@ -1253,7 +1303,7 @@ fun AddEditMemberDialog(
                                     lastName = lastName.trim(),
                                     birthDate = cleanBirthDate,
                                     phone = cleanPhone,
-                                    groupCode = selectedGroup.code,
+                                    groupCode = selectedCategory?.groupCode ?: selectedGroup.code,
                                     beltName = selectedBelt.name,
                                     qrCode = cleanQr,
                                     status = status,

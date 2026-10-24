@@ -1510,6 +1510,8 @@ private fun AppScreenContent(
             AdminCoachesScreen(
                 coaches = coaches,
                 categories = categories,
+                pastSessions = pastSessions,
+                members = allMembers,
                 onAddCoach = onAddCoach,
                 onUpdateCoach = onUpdateCoach,
                 onToggleCoachActive = onToggleCoachActive,

@@ -1,5 +1,7 @@
 package com.example.ui.screens
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,8 +12,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -51,7 +55,12 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,6 +82,7 @@ import com.example.ui.components.MemberAttendanceCalendar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import coil.compose.AsyncImage
 import com.example.util.MemberDuplicates
 
 @Composable
@@ -494,29 +504,27 @@ fun MemberDetailScreen(
         )
     }
 
-    LazyColumn(
+    Column(
         modifier = modifier
             .fillMaxSize()
-            .padding(horizontal = 16.dp)
-            .testTag("member_detail_screen"),
-        verticalArrangement = Arrangement.spacedBy(14.dp),
-        contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
+            .testTag("member_detail_screen")
     ) {
-        item {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                IconButton(onClick = onBack, modifier = Modifier.testTag("member_detail_back_btn")) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
-                }
-                Text(
-                    text = "Fiche de l'athlète",
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black)
-                )
-            }
-        }
+        // ===== En-tete thematique : degrade aux couleurs de la ceinture =====
+        MemberBeltHeader(
+            member = member,
+            categoryName = categoryName,
+            totalAttendances = totalAttendances,
+            attendanceRate = attendanceRate,
+            onBack = onBack
+        )
 
+        LazyColumn(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
+        ) {
         item {
             Card(
                 shape = RoundedCornerShape(20.dp),
@@ -530,77 +538,6 @@ fun MemberDetailScreen(
                         .padding(18.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(14.dp)
-                    ) {
-                        JudokaAvatar(
-                            name = member.fullName,
-                            belt = member.belt,
-                            photoUrl = member.photoUrl,
-                            sizeDp = 68
-                        )
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = member.fullName,
-                                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Black)
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                BeltBadge(belt = member.belt)
-                                GroupBadge(group = member.group)
-                            }
-                            if (categoryName.isNotBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.secondary.copy(alpha = 0.14f),
-                                    modifier = Modifier.testTag("member_category_badge")
-                                ) {
-                                    Text(
-                                        text = categoryName,
-                                        color = MaterialTheme.colorScheme.secondary,
-                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                    )
-                                }
-                            }
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = if (member.status == "ACTIF") JudoSuccess.copy(alpha = 0.14f) else JudoRed.copy(alpha = 0.14f)
-                            ) {
-                                Text(
-                                    text = if (member.status == "ACTIF") "Compte actif" else "Compte suspendu",
-                                    color = if (member.status == "ACTIF") JudoSuccess else JudoRed,
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                                )
-                            }
-                        }
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        InfoStatCard(
-                            label = "Présences",
-                            value = "$totalAttendances",
-                            accent = JudoRed,
-                            modifier = Modifier.weight(1f)
-                        )
-                        InfoStatCard(
-                            label = "Assiduité",
-                            value = "$attendanceRate%",
-                            accent = if (attendanceRate >= 75) JudoSuccess else JudoGold,
-                            modifier = Modifier.weight(1f)
-                        )
-                        InfoStatCard(
-                            label = "Groupe",
-                            value = member.group.code,
-                            accent = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.weight(1f)
-                        )
-                    }
-
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         InfoRow(icon = Icons.Default.Phone, label = "Téléphone", value = member.phone.ifBlank { "—" })
                         InfoRow(icon = Icons.Default.Cake, label = "Date de naissance", value = member.birthDate.ifBlank { "—" })
@@ -681,6 +618,7 @@ fun MemberDetailScreen(
                 onDeleteAttendanceForDate = onDeleteAttendanceForDate
             )
         }
+        }
     }
 }
 
@@ -746,5 +684,194 @@ private fun InfoRow(
             style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
             modifier = Modifier.weight(1f)
         )
+    }
+}
+
+/**
+ * En-tete de la fiche athlete, meme style que la fiche coach, mais dont le
+ * degrade_vertical prend les couleurs de la CEINTURE de l'athlete
+ * (primaire -> secondaire pour les ceintures bicolores, sinon primaire assombri).
+ */
+@Composable
+private fun MemberBeltHeader(
+    member: Member,
+    categoryName: String,
+    totalAttendances: Int,
+    attendanceRate: Int,
+    onBack: () -> Unit
+) {
+    val beltColor = member.belt.primaryColor
+    val beltEnd = member.belt.secondaryColor
+        ?: androidx.compose.ui.graphics.lerp(beltColor, Color.Black, 0.45f)
+    // Derniere bande du degrade : le bout de ceinture leve pour un effet tissu.
+    val gradientEnd = androidx.compose.ui.graphics.lerp(beltEnd, Color.Black, 0.35f)
+    // Texte lisible : sombre sur les ceintures claires (blanche, jaune...), blanc sinon.
+    val onBelt = if (beltColor.luminance() > 0.55f) Color(0xFF371E1E) else Color.White
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Brush.verticalGradient(colors = listOf(beltColor, gradientEnd)))
+            .statusBarsPadding()
+            .padding(horizontal = 8.dp, vertical = 10.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack, modifier = Modifier.testTag("member_detail_back_btn")) {
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Retour",
+                        tint = onBelt
+                    )
+                }
+                Text(
+                    text = "Fiche de l'athlète",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = onBelt.copy(alpha = 0.85f)
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                // Photo ou initiales, cercle borde comme la medaille de la fiche coach
+                Box(
+                    modifier = Modifier
+                        .size(74.dp)
+                        .border(2.dp, onBelt.copy(alpha = 0.6f), CircleShape)
+                        .clip(CircleShape)
+                        .background(onBelt.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (member.photoUrl.isNotBlank()) {
+                        AsyncImage(
+                            model = member.photoUrl,
+                            contentDescription = "Photo de ${member.fullName}",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize().clip(CircleShape)
+                        )
+                    } else {
+                        val initials = member.fullName
+                            .split(" ")
+                            .filter { it.isNotBlank() }
+                            .take(2)
+                            .map { it.first().uppercase() }
+                            .joinToString("")
+                        Text(
+                            text = initials,
+                            style = MaterialTheme.typography.headlineSmall.copy(
+                                fontWeight = FontWeight.Black,
+                                color = onBelt
+                            )
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = member.fullName,
+                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
+                        color = onBelt
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        BeltBadge(belt = member.belt)
+                        GroupBadge(group = member.group)
+                    }
+                    if (categoryName.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = onBelt.copy(alpha = 0.18f),
+                            modifier = Modifier
+                                .testTag("member_category_badge")
+                                .padding(top = 4.dp)
+                        ) {
+                            Text(
+                                text = categoryName,
+                                color = onBelt,
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = onBelt.copy(alpha = 0.18f),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        Text(
+                            text = if (member.status == "ACTIF") "Compte actif" else "Compte suspendu",
+                            color = onBelt,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                        )
+                    }
+                }
+            }
+
+            // Trio de statistiques en pastilles translucides
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                MemberHeaderStat(
+                    label = "Présences",
+                    value = "$totalAttendances",
+                    onBelt = onBelt,
+                    modifier = Modifier.weight(1f)
+                )
+                MemberHeaderStat(
+                    label = "Assiduité",
+                    value = "$attendanceRate%",
+                    onBelt = onBelt,
+                    modifier = Modifier.weight(1f)
+                )
+                MemberHeaderStat(
+                    label = "Groupe",
+                    value = member.group.code,
+                    onBelt = onBelt,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MemberHeaderStat(
+    label: String,
+    value: String,
+    onBelt: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = onBelt.copy(alpha = 0.15f),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.titleMedium.copy(
+                    fontWeight = FontWeight.Black,
+                    color = onBelt
+                ),
+                maxLines = 1
+            )
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontSize = 10.sp,
+                    color = onBelt.copy(alpha = 0.85f)
+                ),
+                maxLines = 1
+            )
+        }
     }
 }
