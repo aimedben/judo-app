@@ -187,9 +187,17 @@ fun QuitSyncDialog(
         onPerformSync { report ->
             localIsSyncing = false
             if (report.isSuccess) {
-                syncSuccessMessage = "Synchronisation réussie (${report.itemsSent} éléments envoyés). Fermeture en cours..."
+                syncSuccessMessage = if (report.pendingRemaining > 0) {
+                    "Synchronisation réussie : le Cloud a été réceptionné sur cette tablette.\n" +
+                        "${report.pendingRemaining} modification(s) du mode coach resteront en attente " +
+                        "jusqu'à la prochaine session administrateur (PIN)."
+                } else {
+                    "Synchronisation réussie (${report.itemsSent} éléments envoyés). Fermeture en cours..."
+                }
                 coroutineScope.launch {
-                    delay(800L)
+                    // Laisser le temps de lire la note quand des modifications du mode
+                    // coach restent en attente (elles partiront a la session admin).
+                    delay(if (report.pendingRemaining > 0) 2500L else 800L)
                     onQuitWithoutSync()
                 }
             } else {

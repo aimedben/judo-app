@@ -1,6 +1,5 @@
 package com.example.data.sync
 
-import android.util.Log
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -71,12 +70,9 @@ class SupabaseStorageService {
                 .build()
 
             httpClient.newCall(request).execute().use { response ->
-                val ok = response.isSuccessful || response.code in 200..299
-                if (!ok) Log.w("SupabaseStorage", "Upload $bucket/$objectPath failed: HTTP ${response.code}")
-                ok
+                response.isSuccessful || response.code in 200..299
             }
         } catch (e: Exception) {
-            Log.w("SupabaseStorage", "Upload $bucket/$objectPath error: ${e.message}")
             false
         }
     }
@@ -96,7 +92,6 @@ class SupabaseStorageService {
                 if (response.isSuccessful) response.body?.bytes() else null
             }
         } catch (e: Exception) {
-            Log.w("SupabaseStorage", "Download $bucket/$objectPath error: ${e.message}")
             null
         }
     }
@@ -116,7 +111,6 @@ class SupabaseStorageService {
                 response.isSuccessful || response.code in 200..299 || response.code == 404
             }
         } catch (e: Exception) {
-            Log.w("SupabaseStorage", "Delete $bucket/$objectPath error: ${e.message}")
             false
         }
     }

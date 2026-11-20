@@ -102,6 +102,7 @@ import com.example.ui.screens.AdminDashboardScreen
 import com.example.ui.screens.AdminExportsScreen
 import com.example.ui.screens.AdminProfileEditDialog
 import com.example.ui.screens.AdminSessionsScreen
+import com.example.ui.screens.AdminSmsCenterScreen
 import com.example.ui.screens.AdminSettingsScreen
 import com.example.ui.screens.CategorySelectionScreen
 import com.example.ui.screens.CoachAthletesScreen
@@ -290,6 +291,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     val scannedMemberForCreation by viewModel.scannedMemberForCreation.collectAsState()
     val pendingMemberRegistration by viewModel.pendingMemberRegistration.collectAsState()
     val scheduledSessions by viewModel.scheduledSessions.collectAsStateWithLifecycle()
+    val cancelledSessionDays by viewModel.cancelledSessionDays.collectAsStateWithLifecycle()
 
     val supabaseConfig by viewModel.supabaseConfig.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
@@ -523,8 +525,17 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                                 isSessionSummaryShown = false
                             },
                             onCancelSession = {
+                                // Séance annulée : la date est consignée pour la catégorie
+                                // (journal partagé via le cloud) afin qu'aucun athlète
+                                // de cette catégorie ne compte absent ce jour-là.
+                                sessionForSelectedCategory?.let { viewModel.cancelCoachSessionDay(it) }
                                 isSessionSummaryShown = false
                                 viewModel.selectCategory(null)
+                            },
+                            onBackToPointage = {
+                                // Revenir au pointage sans sauvegarder : le coach corrige
+                                // les présences/absents puis relance « Fin de séance ».
+                                isSessionSummaryShown = false
                             }
                         )
                     } else if (sessionForSelectedCategory != null) {
@@ -951,12 +962,25 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         onLogout = {
                             showQuitSyncDialog = true
                         },
+                        onOpenSmsCenter = {
+                            activeAdminSubScreen = AdminSubScreen.SMS_CENTER
+                        },
+                        onCancelScheduledSession = { groupCode, date ->
+                            viewModel.cancelSessionDayForGroup(groupCode, date)
+                        },
+                        onRestoreScheduledSession = { groupCode, date ->
+                            viewModel.restoreSessionDayForGroup(groupCode, date)
+                        },
+                        cancelledSessionDays = cancelledSessionDays,
                         scheduledSessions = scheduledSessions,
                         onAddScheduledSession = { s, repeat -> viewModel.addScheduledSession(s, repeat) },
                         onUpdateScheduledSession = { s -> viewModel.updateScheduledSession(s) },
                         onDuplicateScheduledSession = { s -> viewModel.duplicateScheduledSession(s) },
                         onDeleteScheduledSession = { id, scope -> viewModel.deleteScheduledSession(id, scope) },
                         onDeletePastSessions = { ids -> viewModel.deletePastSessions(ids) },
+                        onCancelSessionDay = { groupCode, date -> viewModel.cancelSessionDayForGroup(groupCode, date) },
+                        onRestoreSessionDay = { groupCode, date -> viewModel.restoreSessionDayForGroup(groupCode, date) },
+                        onUpdateSessionDay = { og, od, ng, nd -> viewModel.updateSessionDay(og, od, ng, nd) },
                         onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) },
                         membersSearchQuery = membersSearchQuery,
                         onMembersSearchQueryChange = { membersSearchQuery = it },
@@ -1089,12 +1113,25 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                             showQuitSyncDialog = true
                         },
                         onClearDatabase = { viewModel.clearDatabase() },
+                        onOpenSmsCenter = {
+                            activeAdminSubScreen = AdminSubScreen.SMS_CENTER
+                        },
+                        onCancelScheduledSession = { groupCode, date ->
+                            viewModel.cancelSessionDayForGroup(groupCode, date)
+                        },
+                        onRestoreScheduledSession = { groupCode, date ->
+                            viewModel.restoreSessionDayForGroup(groupCode, date)
+                        },
+                        cancelledSessionDays = cancelledSessionDays,
                         scheduledSessions = scheduledSessions,
                         onAddScheduledSession = { s, repeat -> viewModel.addScheduledSession(s, repeat) },
                         onUpdateScheduledSession = { s -> viewModel.updateScheduledSession(s) },
                         onDuplicateScheduledSession = { s -> viewModel.duplicateScheduledSession(s) },
                         onDeleteScheduledSession = { id, scope -> viewModel.deleteScheduledSession(id, scope) },
                         onDeletePastSessions = { ids -> viewModel.deletePastSessions(ids) },
+                        onCancelSessionDay = { groupCode, date -> viewModel.cancelSessionDayForGroup(groupCode, date) },
+                        onRestoreSessionDay = { groupCode, date -> viewModel.restoreSessionDayForGroup(groupCode, date) },
+                        onUpdateSessionDay = { og, od, ng, nd -> viewModel.updateSessionDay(og, od, ng, nd) },
                         onCheckSessionConflicts = { s, excludeId -> viewModel.checkSessionConflicts(s, excludeId) },
                         membersSearchQuery = membersSearchQuery,
                         onMembersSearchQueryChange = { membersSearchQuery = it },
@@ -1283,7 +1320,11 @@ private fun AppScreenContent(
     onDeleteAttendanceForDate: (Long, String) -> Unit = { _, _ -> },
     onSwitchRole: () -> Unit = {},
     onOpenNotifications: () -> Unit = {},
+    onOpenSmsCenter: () -> Unit = {},
     onOpenProfileDialog: () -> Unit = {},
+    onCancelScheduledSession: (String, String) -> Unit = { _, _ -> },
+    onRestoreScheduledSession: (String, String) -> Unit = { _, _ -> },
+    cancelledSessionDays: List<com.example.util.CancelledSessionDays.Day> = emptyList(),
     onAddCoach: (CoachUser) -> Unit = {},
     onUpdateCoach: (CoachUser) -> Unit = {},
     onToggleCoachActive: (String) -> Unit = {},
@@ -1304,6 +1345,9 @@ private fun AppScreenContent(
     onDuplicateScheduledSession: (com.example.data.model.ScheduledTrainingSession) -> Unit = {},
     onDeleteScheduledSession: (String, com.example.data.model.RecurrenceScope) -> Unit = { _, _ -> },
     onDeletePastSessions: (List<String>) -> Unit = {},
+    onCancelSessionDay: (String, String) -> Unit = { _, _ -> },
+    onRestoreSessionDay: (String, String) -> Unit = { _, _ -> },
+    onUpdateSessionDay: (String, String, String, String) -> Unit = { _, _, _, _ -> },
     onCheckSessionConflicts: (com.example.data.model.ScheduledTrainingSession, String?) -> List<com.example.data.model.SessionConflict> = { _, _ -> emptyList() },
     supabaseConfig: com.example.data.sync.SupabaseConfig = com.example.data.sync.SupabaseConfig(),
     isSyncing: Boolean = false,
@@ -1434,9 +1478,20 @@ private fun AppScreenContent(
                 recentAuditLogs = recentAuditLogs,
                 onUpdateConfig = onUpdateSupabaseConfig,
                 onTestConnection = onTestConnection,
-                onPerformSync = onPerformSync,
                 onGenerateBackup = onGenerateBackup,
                 onRestoreBackup = onRestoreBackup,
+                onBack = { onAdminSubScreenChange(AdminSubScreen.NONE) }
+            )
+            return
+        }
+        AdminSubScreen.SMS_CENTER -> {
+            AdminSmsCenterScreen(
+                allMembers = allMembers,
+                allAttendance = allAttendance,
+                pastSessions = pastSessions,
+                scheduledSessions = scheduledSessions,
+                clubName = clubSettings.clubName,
+                officialStartDate = clubSettings.officialStartDate,
                 onBack = { onAdminSubScreenChange(AdminSubScreen.NONE) }
             )
             return
@@ -1484,7 +1539,11 @@ private fun AppScreenContent(
                 onNavigateToExports = { onAdminSubScreenChange(AdminSubScreen.EXPORTS) },
                 onNavigateToSettings = { onAdminSubScreenChange(AdminSubScreen.SETTINGS) },
                 onOpenNotifications = onOpenNotifications,
+                onOpenSmsCenter = onOpenSmsCenter,
                 onOpenProfileDialog = onOpenProfileDialog,
+                onCancelScheduledSession = onCancelScheduledSession,
+                onRestoreScheduledSession = onRestoreScheduledSession,
+                cancelledSessionDays = cancelledSessionDays,
                 onSwitchToCoach = onSwitchRole,
                 onLogout = onLogout,
                 onSelectMember = onSelectMember
@@ -1503,7 +1562,10 @@ private fun AppScreenContent(
                 searchQuery = membersSearchQuery,
                 onSearchQueryChange = onMembersSearchQueryChange,
                 selectedGroupFilter = membersGroupFilter,
-                onSelectedGroupFilterChange = onMembersGroupFilterChange
+                onSelectedGroupFilterChange = onMembersGroupFilterChange,
+                allAttendance = allAttendance,
+                scheduledSessions = scheduledSessions,
+                officialStartDate = clubSettings.officialStartDate
             )
         }
         ScreenTab.COACHES -> {
@@ -1544,6 +1606,10 @@ private fun AppScreenContent(
                 onDuplicateScheduledSession = onDuplicateScheduledSession,
                 onDeleteScheduledSession = onDeleteScheduledSession,
                 onDeletePastSessions = onDeletePastSessions,
+                cancelledSessionDays = cancelledSessionDays,
+                onCancelSessionDay = onCancelSessionDay,
+                onRestoreSessionDay = onRestoreSessionDay,
+                onUpdateSessionDay = onUpdateSessionDay,
                 onCheckConflicts = onCheckSessionConflicts,
                 onCorrectAttendance = onCorrectAttendance
             )

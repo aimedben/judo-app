@@ -98,7 +98,6 @@ fun AdminCloudSyncScreen(
     recentAuditLogs: List<SyncAuditLogEntity>,
     onUpdateConfig: (url: String, anonKey: String, autoSync: Boolean, dailySync: Boolean) -> Unit,
     onTestConnection: suspend () -> Result<String>,
-    onPerformSync: () -> Unit,
     onGenerateBackup: suspend () -> String,
     onRestoreBackup: suspend (String) -> Result<String>,
     onBack: () -> Unit,
@@ -109,8 +108,6 @@ fun AdminCloudSyncScreen(
 
     var urlInput by remember(supabaseConfig.url) { mutableStateOf(supabaseConfig.url) }
     var anonKeyInput by remember(supabaseConfig.anonKey) { mutableStateOf(supabaseConfig.anonKey) }
-    var autoSyncEnabled by remember(supabaseConfig.isAutoSyncEnabled) { mutableStateOf(supabaseConfig.isAutoSyncEnabled) }
-    var daily22hSyncEnabled by remember(supabaseConfig.isDaily22hSyncEnabled) { mutableStateOf(supabaseConfig.isDaily22hSyncEnabled) }
 
     var isTestingConnection by remember { mutableStateOf(false) }
     var testResultText by remember { mutableStateOf<String?>(null) }
@@ -277,43 +274,49 @@ fun AdminCloudSyncScreen(
                         }
                     }
 
-                    // Action: Sync Now Button
-                    Button(
-                        onClick = onPerformSync,
-                        enabled = !isSyncing && supabaseConfig.isConfigured && isOnline,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = JudoSuccess,
-                            contentColor = Color.White
-                        ),
+                    // Synchronisation automatique en temps réel : aucune action manuelle.
+                    Surface(
                         shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("admin_sync_now_btn")
+                        color = JudoSuccess.copy(alpha = 0.12f),
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        if (isSyncing) {
-                            CircularProgressIndicator(
-                                color = Color.White,
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Synchronisation en cours...", fontWeight = FontWeight.Bold)
-                        } else {
-                            Icon(
-                                imageVector = Icons.Default.Sync,
-                                contentDescription = null,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (isSyncing) {
+                                CircularProgressIndicator(
+                                    color = JudoSuccess,
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Default.CloudSync,
+                                    contentDescription = null,
+                                    tint = JudoSuccess,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                            }
                             Text(
-                                text = if (pendingCount > 0) "Synchroniser maintenant ($pendingCount en attente)" else "Synchroniser maintenant (À jour)",
-                                fontWeight = FontWeight.Bold
+                                text = when {
+                                    isSyncing -> "Synchronisation automatique en cours..."
+                                    pendingCount > 0 -> "$pendingCount modification(s) en cours d'envoi..."
+                                    else -> "Synchronisation automatique en temps réel activée"
+                                },
+                                style = MaterialTheme.typography.bodySmall.copy(
+                                    fontWeight = FontWeight.Bold,
+                                    color = JudoSuccess
+                                )
                             )
                         }
                     }
 
                     // Report message
-                    if (lastSyncReport != null && !isSyncing) {
+                    if (lastSyncReport != null && !isSyncing &&
+                        (lastSyncReport.itemsSent > 0 || lastSyncReport.itemsReceived > 0 || !lastSyncReport.isSuccess)
+                    ) {
                         Surface(
                             shape = RoundedCornerShape(8.dp),
                             color = if (lastSyncReport.isSuccess) JudoSuccess.copy(alpha = 0.12f) else MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
@@ -378,7 +381,7 @@ fun AdminCloudSyncScreen(
                     }
 
                     Text(
-                        text = "Renseignez l'URL de votre instance Supabase et la clé publique anon. Vos données locales seront synchronisées sans Realtime pour rester strictement dans l'offre gratuite.",
+                        text = "Renseignez l'URL de votre instance Supabase et la clé publique anon. Vos données locales sont synchronisées automatiquement en temps réel (vérification toutes les 15 secondes), sans Realtime, pour rester strictement dans l'offre gratuite.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -407,52 +410,12 @@ fun AdminCloudSyncScreen(
                             .testTag("supabase_anon_key_input")
                     )
 
-                    // Automatic sync toggles
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Synchronisation automatique lors de la fermeture",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                            )
-                            Text(
-                                text = "Propose automatiquement la sauvegarde cloud à la déconnexion",
-                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            )
-                        }
-                        Switch(
-                            checked = autoSyncEnabled,
-                            onCheckedChange = { autoSyncEnabled = it },
-                            colors = SwitchDefaults.colors(checkedThumbColor = JudoGold),
-                            modifier = Modifier.testTag("toggle_auto_sync")
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "Synchronisation quotidienne à 22h00",
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
-                            )
-                            Text(
-                                text = "Sauvegarde programmée de fin de journée si la tablette est connectée",
-                                style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            )
-                        }
-                        Switch(
-                            checked = daily22hSyncEnabled,
-                            onCheckedChange = { daily22hSyncEnabled = it },
-                            colors = SwitchDefaults.colors(checkedThumbColor = JudoGold),
-                            modifier = Modifier.testTag("toggle_daily_22h_sync")
-                        )
-                    }
+                    // Synchronisation en temps réel : plus de réglages manuels.
+                    Text(
+                        text = "Les modifications sont envoyées immédiatement au cloud, et la tablette récupère automatiquement les nouveautés toutes les 15 secondes lorsque l'application est ouverte.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
 
                     // Test and Save Buttons
                     Row(
@@ -464,7 +427,7 @@ fun AdminCloudSyncScreen(
                                 scope.launch {
                                     isTestingConnection = true
                                     testResultText = null
-                                    onUpdateConfig(urlInput, anonKeyInput, autoSyncEnabled, daily22hSyncEnabled)
+                                    onUpdateConfig(urlInput, anonKeyInput, true, false)
                                     val result = onTestConnection()
                                     isTestingConnection = false
                                     if (result.isSuccess) {
@@ -493,7 +456,7 @@ fun AdminCloudSyncScreen(
 
                         Button(
                             onClick = {
-                                onUpdateConfig(urlInput, anonKeyInput, autoSyncEnabled, daily22hSyncEnabled)
+                                onUpdateConfig(urlInput, anonKeyInput, true, false)
                                 Toast.makeText(context, "Configuration Supabase enregistrée", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = JudoGold, contentColor = Color.Black),

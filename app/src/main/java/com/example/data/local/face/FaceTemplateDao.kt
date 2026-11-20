@@ -13,6 +13,9 @@ interface FaceTemplateDao {
     @Query("SELECT * FROM face_template WHERE memberId = :memberId")
     suspend fun forMember(memberId: Long): List<FaceTemplateEntity>
 
+    @Query("SELECT * FROM face_template")
+    suspend fun all(): List<FaceTemplateEntity>
+
     @Query("SELECT * FROM face_template WHERE memberId IN (:memberIds)")
     suspend fun forMembers(memberIds: List<Long>): List<FaceTemplateEntity>
 

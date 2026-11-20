@@ -3,8 +3,8 @@ package com.example.data.sync
 data class SupabaseConfig(
     val url: String = "https://vkcsqgxsylsuyyszlbko.supabase.co",
     val anonKey: String = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZrY3NxZ3hzeWxzdXl5c3psYmtvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTE5OTU3MTcsImV4cCI6MjEwNzU3MTcxN30.xExE0X-0Kx76GxXpLohBHToqvgJC76S6_PT6f3nDpwE",
-    val isAutoSyncEnabled: Boolean = true,
-    val isDaily22hSyncEnabled: Boolean = true,
+    val isAutoSyncEnabled: Boolean = false,
+    val isDaily22hSyncEnabled: Boolean = false,
     val lastSyncTimestamp: Long = 0L,
     val lastSyncStatus: String = "CONFIGURÉ"
 ) {

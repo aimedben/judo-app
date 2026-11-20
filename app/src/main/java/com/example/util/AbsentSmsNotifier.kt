@@ -206,17 +206,33 @@ object AbsentSmsNotifier {
     }
 
     /**
-     * Builds the personalised message for one guardian.
-     *
-     * Official club template; the session date (dd/MM/yyyy) and time (HHhMM) are recovered
-     * automatically from the session. The athlete name is always the one of the child whose
-     * number is being messaged: each recipient gets their own message built from their own
-     * absent athlete — never from another athlete's name.
-     *
-     * Fallbacks: an unparseable date keeps its raw value, a missing start time is omitted,
-     * and a blank [clubName] falls back to the club's default label.
+     * Modèle de message officiel du club, avec emplacements personnalisables :
+     *  - {NOM}    : nom de l'athlète absent (personnalisé pour chaque destinataire)
+     *  - {DATE}   : date de la séance (jj/MM/aaaa)
+     *  - {HEURE}  : heure de début (" à 17h30") ou vide si inconnue
+     *  - {CLUB}   : nom du club
+     * Le coach garde le message pré-rempli par défaut, mais peut l'éditer librement.
      */
-    fun buildMessage(
+    const val DEFAULT_MESSAGE_TEMPLATE = "Bonjour,\n" +
+        "Madame, Monsieur,\n" +
+        "Nous vous informons que votre enfant {NOM} ne s'est pas présenté(e) à la séance " +
+        "d'entraînement de ce jour le {DATE}{HEURE} et, par conséquent, " +
+        "n'a pas été enregistré(e) sur notre système de pointage.\n" +
+        "Cordialement,\n" +
+        "L'administration du {CLUB}"
+
+    /**
+     * Builds the personalised message for one guardian from a template.
+     *
+     * Emplacements reconnus : {NOM}, {DATE}, {HEURE}, {CLUB} (insensibles à la casse
+     * via une première passe en majuscules). Le nom reste toujours celui de l'enfant
+     * dont le numéro est contacté — jamais celui d'un autre athlète.
+     *
+     * Fallbacks: an unparseable date keeps its raw value, a missing start time yields an
+     * empty {HEURE}, and a blank [clubName] falls back to the club's default label.
+     */
+    fun messageFromTemplate(
+        template: String,
         memberName: String,
         sessionDate: String,
         sessionStart: String? = null,
@@ -229,15 +245,34 @@ object AbsentSmsNotifier {
             ?: sessionDate.trim()
         val clockLabel = formatSessionClock(sessionStart)?.let { " à $it" }.orEmpty()
         val club = clubName?.trim().orEmpty().ifBlank { DEFAULT_CLUB_LABEL }
+        val body = template.ifBlank { DEFAULT_MESSAGE_TEMPLATE }
 
-        return "Bonjour,\n" +
-            "Madame, Monsieur,\n" +
-            "Nous vous informons que votre enfant $name ne s'est pas présenté(e) à la séance " +
-            "d'entraînement de ce jour le $dateLabel$clockLabel et, par conséquent, " +
-            "n'a pas été enregistré(e) sur notre système de pointage.\n" +
-            "Cordialement,\n" +
-            "L'administration du $club"
+        return body
+            .replace("{nom}", name, ignoreCase = true)
+            .replace("{date}", dateLabel, ignoreCase = true)
+            .replace("{heure}", clockLabel, ignoreCase = true)
+            .replace("{club}", club, ignoreCase = true)
     }
+
+    /**
+     * Builds the personalised message for one guardian with the club's official template.
+     *
+     * The athlete name is always the one of the child whose number is being messaged: each
+     * recipient gets their own message built from their own absent athlete — never from
+     * another athlete's name.
+     */
+    fun buildMessage(
+        memberName: String,
+        sessionDate: String,
+        sessionStart: String? = null,
+        clubName: String? = null
+    ): String = messageFromTemplate(
+        template = DEFAULT_MESSAGE_TEMPLATE,
+        memberName = memberName,
+        sessionDate = sessionDate,
+        sessionStart = sessionStart,
+        clubName = clubName
+    )
 
     /** Transport format used by the `smsto:` URI (keeps the national form, digits only). */
     fun toSmsUriNumber(normalizedPhone: String): String = normalizedPhone.filter { it.isDigit() }

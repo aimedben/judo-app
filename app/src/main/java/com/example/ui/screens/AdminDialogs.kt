@@ -10,6 +10,8 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -90,12 +92,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.AdminNotification
 import com.example.data.model.AdminProfile
 import com.example.data.model.CoachUser
@@ -106,6 +110,7 @@ import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.util.CategoryYears
 import com.example.util.PhotoCompressor
+import com.example.ui.components.BottomSheetDialog
 import kotlinx.coroutines.launch
 
 @Composable
@@ -115,16 +120,14 @@ fun NotificationsDialog(
     onMarkAllAsRead: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
+    BottomSheetDialog(onDismiss = onDismiss) {
         Card(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = CardDefaults.outlinedCardBorder(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
             modifier = Modifier
-                .widthIn(max = 560.dp)
                 .fillMaxWidth()
-                .padding(vertical = 16.dp)
                 .testTag("admin_notifications_dialog")
         ) {
             Column(
@@ -304,16 +307,14 @@ fun AdminProfileEditDialog(
         }
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    BottomSheetDialog(onDismiss = onDismiss) {
         Card(
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = CardDefaults.outlinedCardBorder(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 10.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
             modifier = Modifier
-                .widthIn(max = 520.dp)
                 .fillMaxWidth()
-                .padding(vertical = 12.dp)
                 .testTag("admin_profile_dialog")
         ) {
             Column(
@@ -325,8 +326,15 @@ fun AdminProfileEditDialog(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        .padding(horizontal = 20.dp, vertical = 14.dp)
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    JudoRed.copy(alpha = 0.14f),
+                                    MaterialTheme.colorScheme.surface
+                                )
+                            )
+                        )
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -391,7 +399,7 @@ fun AdminProfileEditDialog(
                     ) {
                         Box(
                             modifier = Modifier
-                                .size(104.dp)
+                                .size(136.dp)
                                 .clip(CircleShape)
                                 .background(MaterialTheme.colorScheme.surfaceVariant)
                                 .border(3.dp, JudoGold, CircleShape),
@@ -403,7 +411,7 @@ fun AdminProfileEditDialog(
                                     contentDescription = "Photo de profil",
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier
-                                        .size(104.dp)
+                                        .size(136.dp)
                                         .clip(CircleShape)
                                 )
                             } else {
@@ -616,8 +624,7 @@ fun AddEditCoachDialog(
     categories: List<JudoCategory>,
     onSave: (CoachUser) -> Unit,
     onDismiss: () -> Unit
-) {
-    var name by remember { mutableStateOf(initialCoach?.name ?: "") }
+) {    var name by remember { mutableStateOf(initialCoach?.name ?: "") }
     var grade by remember { mutableStateOf(initialCoach?.grade ?: "Ceinture Noire 1er Dan") }
     var phone by remember { mutableStateOf(initialCoach?.phone ?: "") }
     var isActive by remember { mutableStateOf(initialCoach?.isActive ?: true) }
@@ -637,16 +644,14 @@ fun AddEditCoachDialog(
         if (uri != null) pendingPhotoUri = uri
     }
 
-    Dialog(onDismissRequest = onDismiss) {
+    BottomSheetDialog(onDismiss = onDismiss) {
         Card(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = CardDefaults.outlinedCardBorder(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
             modifier = Modifier
-                .widthIn(max = 560.dp)
                 .fillMaxWidth()
-                .padding(vertical = 12.dp)
                 .testTag("add_edit_coach_dialog")
         ) {
             Column(
@@ -921,14 +926,14 @@ fun AddEditCoachDialog(
     var isActive by remember { mutableStateOf(initialCategory?.isActive ?: true) }
     val yearsPreview = CategoryYears.format(selectedYears, upToAndBefore)
 
-    Dialog(onDismissRequest = onDismiss) {
+    BottomSheetDialog(onDismiss = onDismiss) {
         Card(
-            shape = RoundedCornerShape(20.dp),
+            shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = CardDefaults.outlinedCardBorder(),
+            elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp)
                 .testTag("add_edit_category_dialog")
         ) {
             Column(

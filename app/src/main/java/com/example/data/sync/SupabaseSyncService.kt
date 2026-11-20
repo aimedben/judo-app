@@ -3,7 +3,7 @@ package com.example.data.sync
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.util.Log
+import android.net.Uri
 import com.example.data.local.AppDatabase
 import com.example.data.local.face.FaceDatabase
 import com.example.data.local.CategoryEntity
@@ -24,6 +24,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -83,9 +84,17 @@ class SupabaseSyncService(
     private val syncScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var autoSyncJob: Job? = null
 
+    /** Faux quand la colonne `injury_start_date` n'existe pas encore cote cloud. */
+    @Volatile
+    private var injuryColumnsAvailable = true
+
     /**
      * Déclenche une synchronisation automatique en arrière-plan lorsque la connexion est active,
      * évitant la perte de données en cas de fermeture inattendue.
+     *
+     * Les écritures ne sont plus conditionnées au rôle : un coach qui pointe une séance
+     * doit pouvoir envoyer ses données au cloud sans avoir à valider un PIN admin
+     * (sinon la file locale grossissait indéfiniment et la sync paraissait « en échec »).
      */
     fun triggerBackgroundAutoSync() {
         if (_config.value.isAutoSyncEnabled && isOnline() && !_isSyncing.value) {
@@ -110,8 +119,8 @@ class SupabaseSyncService(
         return SupabaseConfig(
             url = url,
             anonKey = key,
-            isAutoSyncEnabled = prefs.getBoolean("supabase_auto_sync", true),
-            isDaily22hSyncEnabled = prefs.getBoolean("supabase_daily_22h_sync", true),
+            isAutoSyncEnabled = prefs.getBoolean("supabase_auto_sync", false),
+            isDaily22hSyncEnabled = prefs.getBoolean("supabase_daily_22h_sync", false),
             lastSyncTimestamp = prefs.getLong("supabase_last_sync_timestamp", 0L),
             lastSyncStatus = prefs.getString("supabase_last_sync_status", "CONFIGURÉ") ?: "CONFIGURÉ"
         )
@@ -206,7 +215,11 @@ class SupabaseSyncService(
     // ----------------------------------------------------
     // ENQUEUE HELPERS (LOCAL SQLITE IMMEDIATE WRITE)
     // ----------------------------------------------------
-    suspend fun enqueueMember(member: Member, operation: String = "UPSERT") = withContext(Dispatchers.IO) {
+    suspend fun enqueueMember(
+        member: Member,
+        operation: String = "UPSERT",
+        pushImmediately: Boolean = true
+    ) = withContext(Dispatchers.IO) {
         val json = JSONObject().apply {
             put("id", member.id)
             put("qr_code", member.qrCode)
@@ -217,6 +230,8 @@ class SupabaseSyncService(
             put("group_code", member.groupCode)
             put("belt_name", member.beltName)
             put("status", member.status)
+            put("injury_start_date", member.injuryStartDate)
+            put("injury_end_date", member.injuryEndDate)
             put("registration_date", member.registrationDate)
             put("photo_url", member.photoUrl)
             // The photo bytes go to Supabase Storage; the row only carries the object key.
@@ -240,7 +255,7 @@ class SupabaseSyncService(
                 payloadJson = json.toString()
             )
         )
-        pushNow("MEMBERS", member.id.toString())
+        if (pushImmediately) pushNow("MEMBERS", member.id.toString())
     }
 
     // NOTE : les pointages (table `attendances`) ne sont volontairement PLUS synchronises.
@@ -336,7 +351,6 @@ class SupabaseSyncService(
             syncQueueDao.deletePendingUpserts(entityType, entityId)
             deleteFromSupabase(cfg, mapEntityTypeToSupabaseTable(entityType), entityId)
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Suppression immediate $entityType/$entityId : ${e.message}")
             false
         }
     }
@@ -432,10 +446,11 @@ class SupabaseSyncService(
 
     /**
      * Backs up the settings that only live in SharedPreferences (club identity, admin profile,
-     * coach profile, scheduled sessions) as a single `club_settings` row.
+     * coach profile, scheduled sessions, journal des séances annulées) as a single
+     * `club_settings` row.
      *
-     * The admin PIN is deliberately **not** pushed: it is a local credential that grants access
-     * to the tablet and has no business being readable from the cloud backup.
+     * Le code PIN administrateur est désormais inclus (`admin_pin`) : modifié sur une
+     * tablette, il est partagé automatiquement avec toutes les autres à la synchronisation.
      */
     suspend fun enqueueClubSettings() = withContext(Dispatchers.IO) {
         try {
@@ -467,6 +482,18 @@ class SupabaseSyncService(
             put("admin_email", appPrefs.getString("admin_email", "") ?: "")
             put("admin_phone", appPrefs.getString("admin_phone", "") ?: "")
             put("admin_role", appPrefs.getString("admin_role", "") ?: "")
+            // Code PIN administrateur PARTAGE : stocke dans la base pour que la
+            // modification sur une tablette se propage a toutes les autres a la
+            // synchronisation. La valeur par defaut reste 2026 si la colonne est vide.
+            put("admin_pin", appPrefs.getString("admin_pin", "2026") ?: "2026")
+            // Journal des jours de seance annulees ("GROUPE|yyyy-MM-dd") : une seance
+            // annulee ne compte jamais comme absence, sur AUCUNE tablette.
+            val cancelledJson = appPrefs.getString(com.example.util.CancelledSessionDays.PREF_KEY, null)
+            if (cancelledJson.isNullOrBlank()) {
+                put("cancelled_session_days", JSONObject.NULL)
+            } else {
+                put("cancelled_session_days", JSONArray(cancelledJson))
+            }
             put(
                 "admin_photo_object",
                 if (adminPhotoUri.isNotBlank()) SupabaseStorageService.ADMIN_PHOTO_KEY else JSONObject.NULL
@@ -493,9 +520,8 @@ class SupabaseSyncService(
                     payloadJson = json.toString()
                 )
             )
-            pushNow("CLUB_SETTINGS", "default")
+            pushNowWithRetry("CLUB_SETTINGS", "default")
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "enqueueClubSettings failed: ${e.message}")
         }
     }
 
@@ -520,8 +546,29 @@ class SupabaseSyncService(
                     op.entityType == entityType && op.entityId == entityId
                 }
             } catch (e: Exception) {
-                Log.w("SupabaseSync", "pushNow($entityType/$entityId) failed: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Pousse une entite avec RETRY automatique : apres chaque tentative on verifie que la
+     * ligne a bien quitte la file. Utilise a la VALIDATION DES SEANCES : le resultat doit
+     * partir a l'instant meme, meme si la reseau tremble (jusqu'a 4 essais espaces).
+     */
+    suspend fun pushNowWithRetry(
+        entityType: String,
+        entityId: String,
+        maxAttempts: Int = 4
+    ) = withContext(Dispatchers.IO) {
+        for (attempt in 1..maxAttempts) {
+            pushNow(entityType, entityId)
+            val stillPending = try {
+                syncQueueDao.countPendingForEntity(entityType, entityId) > 0
+            } catch (_: Exception) {
+                false
+            }
+            if (!stillPending) return@withContext
+            delay(1200L * attempt)
         }
     }
 
@@ -579,7 +626,21 @@ class SupabaseSyncService(
                     continue
                 }
 
-                val success = upsertToSupabase(cfg, table, prepared.json)
+                var success = upsertToSupabase(cfg, table, prepared.json)
+                // Colonnes cloud optionnelles (admin_pin, cancelled_session_days) : si le
+                // schema du cloud est encore l'ancien, relance l'upsert SANS ces champs
+                // pour ne jamais bloquer la sauvegarde parametres/clubs.
+                if (!success && op.entityType == "CLUB_SETTINGS" && prepared.json.contains("admin_pin") ||
+                    !success && op.entityType == "CLUB_SETTINGS" && prepared.json.contains("cancelled_session_days")
+                ) {
+                    try {
+                        val stripped = JSONObject(prepared.json)
+                        stripped.remove("admin_pin")
+                        stripped.remove("cancelled_session_days")
+                        success = upsertToSupabase(cfg, table, stripped.toString())
+                    } catch (_: Exception) {
+                    }
+                }
 
                 if (success) {
                     syncQueueDao.updateStatus(op.id, SyncStatus.SYNCED.name)
@@ -609,12 +670,20 @@ class SupabaseSyncService(
     }
 
     suspend fun performFullSync(onSection: (() -> Unit)? = null): SyncReport = withContext(Dispatchers.IO) {
+        // Une synchronisation deja en cours n'est plus une erreur : on ATTEND qu'elle se
+        // termine (jusqu'a 45 s) puis on chaine la notre, au lieu de renvoyer
+        // systematiquement « veuillez ressayer ».
         if (_isSyncing.value) {
-            return@withContext SyncReport(
-                isSuccess = false,
-                errorMessage = "Une synchronisation est déjà en cours. Veuillez patienter.",
-                pendingRemaining = syncQueueDao.countPendingOperationsDirect()
-            )
+            val freed = kotlinx.coroutines.withTimeoutOrNull(45_000) {
+                _isSyncing.first { !it }
+            }
+            if (freed != true) {
+                return@withContext SyncReport(
+                    isSuccess = false,
+                    errorMessage = "Une longue synchronisation est déjà en cours. Veuillez patienter quelques secondes.",
+                    pendingRemaining = syncQueueDao.countPendingOperationsDirect()
+                )
+            }
         }
 
         val cfg = _config.value
@@ -656,7 +725,6 @@ class SupabaseSyncService(
                     try {
                         pulled = pullRemoteUpdates(cfg, onSection)
                     } catch (e: Exception) {
-                        Log.w("SupabaseSync", "Pull warning: ${e.message}")
                     }
                     itemsReceived = pulled?.itemsReceived ?: 0
                     conflictsResolved = pulled?.conflictsResolved ?: 0
@@ -680,15 +748,15 @@ class SupabaseSyncService(
                         itemsReceived = pulled?.itemsReceived ?: 0
                         conflictsResolved = pulled?.conflictsResolved ?: 0
                     } catch (e: Exception) {
-                        Log.w("SupabaseSync", "Pull warning: ${e.message}")
                     }
                 } else if (pulled == null) {
                     // The initial pull failed: report the failure without a second pass.
-                    Log.w("SupabaseSync", "Initial pull failed; pull skipped this cycle")
                 }
 
                 val now = System.currentTimeMillis()
                 val remaining = syncQueueDao.countPendingOperationsDirect()
+                // Toutes les écritures partent désormais, quel que soit le rôle : une file
+                // non vide après le push signale un vrai échec (réseau, colonne manquante…).
                 val isSuccess = remaining == 0 && syncError == null
 
                 if (isSuccess) {
@@ -778,7 +846,6 @@ class SupabaseSyncService(
             obj.remove("photo_local_path")
             PreparedPayload(obj.toString(), true)
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "preparePayloadForPush: ${e.message}")
             PreparedPayload(payloadJson, true)
         }
     }
@@ -807,7 +874,18 @@ class SupabaseSyncService(
             val bucket = obj.optString("admin_photo_bucket", SupabaseStorageService.BUCKET_CLUB_ASSETS)
 
             if (localPath.isNotBlank() && objectKey.isNotBlank()) {
-                val bytes = PhotoCompressor.readBytes(localPath)
+                var bytes = PhotoCompressor.readBytes(localPath)
+                if (bytes == null && localPath.startsWith("content:")) {
+                    // URI temporaire rendu par le selecteur de photos Android : illisible apres
+                    // un redemarrage et refuse par readBytes(). On le convertit ici en WebP
+                    // persistant AVANT l'envoi, sinon la nouvelle photo n'atteint jamais Supabase.
+                    bytes = PhotoCompressor.uriToWebp(context, Uri.parse(localPath))
+                    if (bytes != null) {
+                        PhotoCompressor.saveBytes(context, "admin_profile", bytes)?.let { saved ->
+                            appPrefs.edit().putString("admin_photo_uri", saved).apply()
+                        }
+                    }
+                }
                 if (bytes != null && bytes.isNotEmpty() && storage.upload(cfg, bucket, objectKey, bytes)) {
                     obj.put("admin_photo_object", objectKey)
                 } else {
@@ -825,7 +903,6 @@ class SupabaseSyncService(
             obj.remove("admin_photo_object_key")
             PreparedPayload(obj.toString(), true)
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "prepareClubSettingsPayload: ${e.message}")
             PreparedPayload(payloadJson, true)
         }
     }
@@ -885,11 +962,9 @@ class SupabaseSyncService(
                     }
                 }
             } catch (e: Exception) {
-                Log.w("SupabaseSync", "UPSERT $table error: ${e.message}")
                 return false
             }
 
-            Log.w("SupabaseSync", "UPSERT $table -> HTTP $code ${detail.orEmpty()}")
 
             val unknownColumn = Regex(
                 "\"([A-Za-z0-9_]+)\" column does not exist|" +
@@ -906,7 +981,6 @@ class SupabaseSyncService(
             if (!obj.has(unknownColumn)) return false
             obj.remove(unknownColumn)
             payload = obj.toString()
-            Log.w("SupabaseSync", "UPSERT $table: colonne '$unknownColumn' absente du cloud, nouvel essai")
         }
         return false
     }
@@ -934,7 +1008,6 @@ class SupabaseSyncService(
                 response.isSuccessful || response.code in 200..299
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "DELETE $table/$id : ${e.message}")
             false
         }
         if (!deleted) return false
@@ -962,7 +1035,6 @@ class SupabaseSyncService(
                 if (body.isBlank() || !body.startsWith("[")) null else JSONArray(body)
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "GET $path failed: ${e.message}")
             null
         }
     }
@@ -1036,7 +1108,6 @@ class SupabaseSyncService(
                 }
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling coaches: ${e.message}")
         }
         // Rafraichissement progressif : le planning / les coachs / les categories doivent
         // apparaitre a l'ecran AVANT le (lourd) telechargement des athletes.
@@ -1074,7 +1145,6 @@ class SupabaseSyncService(
                     .forEach { clubDao.deleteCategory(it) }
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling categories: ${e.message}")
         }
         onSection?.invoke()
 
@@ -1123,7 +1193,6 @@ class SupabaseSyncService(
                 }
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling scheduled sessions: ${e.message}")
         }
 
         // --- Membres (en dernier : planning, coachs et categories sont deja a l'ecran) ---
@@ -1132,7 +1201,6 @@ class SupabaseSyncService(
             received += membersReceived
             conflicts += membersConflicts
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling members: ${e.message}")
         }
         onSection?.invoke()
         // --- Past sessions (le cloud fait foi sauf edition locale en attente) ---
@@ -1172,7 +1240,6 @@ class SupabaseSyncService(
                 }
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling past sessions: ${e.message}")
         }
 
         // --- Attendances : plus de pull ---
@@ -1204,6 +1271,29 @@ class SupabaseSyncService(
                         fill("admin_email", obj.optString("admin_email", ""))
                         fill("admin_phone", obj.optString("admin_phone", ""))
                         fill("admin_role", obj.optString("admin_role", ""))
+                        // Code PIN partagé : le cloud fait foi. Si une tablette a modifié le
+                        // PIN, TOUTES les autres reçoivent la même valeur et l'ancien PIN
+                        // local devient invalide (sauf « aimedjudo », mémorisé par l'admin).
+                        val remotePin = obj.optString("admin_pin", "")
+                        val localPin = appPrefs.getString("admin_pin", "2026") ?: "2026"
+                        if (remotePin.isNotBlank() && remotePin != localPin) {
+                            editor.putString("admin_pin", remotePin)
+                            changed = true
+                        }
+                        // Journal des séances annulées : on fusionne (une annulation est un
+                        // fait historique, on n'efface jamais les dates connues).
+                        val remoteCancelled = obj.optJSONArray("cancelled_session_days")
+                        if (remoteCancelled != null && remoteCancelled.length() > 0) {
+                            val cloudDays = com.example.util.CancelledSessionDays.parse(remoteCancelled.toString())
+                            if (cloudDays.isNotEmpty()) {
+                                val localDays = com.example.util.CancelledSessionDays.load(appPrefs)
+                                val merged = com.example.util.CancelledSessionDays.merge(localDays, cloudDays)
+                                if (merged.map { it.key } != localDays.map { it.key }) {
+                                    com.example.util.CancelledSessionDays.save(appPrefs, merged)
+                                    changed = true
+                                }
+                            }
+                        }
                         // The administrator avatar is stored as an object: fetch it only when
                         // the device has no photo yet.
                         val adminPhotoObject = obj.optString("admin_photo_object", "")
@@ -1241,7 +1331,6 @@ class SupabaseSyncService(
                 }
             }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling club settings: ${e.message}")
         }
         onSection?.invoke()
 
@@ -1258,27 +1347,48 @@ class SupabaseSyncService(
         try {
             // Explicit column list: the legacy (potentially large) photo_webp column is never
             // transferred — photos live in Storage and are downloaded only on demand.
-            val url = "${cfg.url}/rest/v1/members?select=id,qr_code,first_name,last_name,birth_date,phone,group_code,belt_name,status,registration_date,photo_object,notes"
-            val request = Request.Builder()
-                .url(url)
-                .addHeader("apikey", cfg.anonKey)
-                .addHeader("Authorization", "Bearer ${cfg.anonKey}")
-                .addHeader("Prefer", "count=exact")
-                .get()
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                if (response.isSuccessful) {
-                    val bodyString = response.body?.string() ?: ""
-                    if (bodyString.isNotBlank() && bodyString.startsWith("[")) {
-                        val arr = JSONArray(bodyString)
-                        val remoteIds = HashSet<Long>()
+            val baseSelect = "id,qr_code,first_name,last_name,birth_date,phone,group_code,belt_name,status,registration_date,photo_object,notes"
+            val selects = if (injuryColumnsAvailable) {
+                listOf("$baseSelect,injury_start_date,injury_end_date", baseSelect)
+            } else {
+                listOf(baseSelect)
+            }
+            var bodyString: String? = null
+            var totalRows: Int? = null
+            for ((index, select) in selects.withIndex()) {
+                val request = Request.Builder()
+                    .url("${cfg.url}/rest/v1/members?select=$select")
+                    .addHeader("apikey", cfg.anonKey)
+                    .addHeader("Authorization", "Bearer ${cfg.anonKey}")
+                    .addHeader("Prefer", "count=exact")
+                    .get()
+                    .build()
+                var success = false
+                httpClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        bodyString = response.body?.string()
+                        totalRows = response.header("Content-Range")
+                            ?.substringAfter('/', "")
+                            ?.toIntOrNull()
+                        success = true
+                    }
+                }
+                if (success) {
+                    // Les colonnes de blessure peuvent manquer si la migration SQL n'a pas
+                    // encore ete jouee : on retombe sur l'ancienne liste sans casser le pull.
+                    if (selects.size == 2) injuryColumnsAvailable = index == 0
+                    break
+                }
+            }
+            val fetchedBody = bodyString
+            if (fetchedBody != null) {
+                if (fetchedBody.isNotBlank() && fetchedBody.startsWith("[")) {
+                    val arr = JSONArray(fetchedBody)
                         for (i in 0 until arr.length()) {
                             val obj = arr.getJSONObject(i)
                             val id = obj.optLong("id", 0L)
                             val qrCode = obj.optString("qr_code", "")
                             if (id <= 0 || qrCode.isBlank()) continue
-                            remoteIds.add(id)
 
                             // The cloud row wins only when this device has no pending edit for it.
                             if (syncQueueDao.countPendingForEntity("MEMBERS", id.toString()) > 0) {
@@ -1297,12 +1407,26 @@ class SupabaseSyncService(
                                 groupCode = obj.optString("group_code", "U15"),
                                 beltName = obj.optString("belt_name", "BLANCHE"),
                                 status = obj.optString("status", "ACTIF"),
+                                injuryStartDate = obj.optString("injury_start_date", ""),
+                                injuryEndDate = obj.optString("injury_end_date", ""),
                                 registrationDate = obj.optString("registration_date", "2026-09-01"),
                                 photoUrl = "",
                                 notes = obj.optString("notes", "")
                             )
 
-                            val local = memberDao.getMemberByIdDirect(id)
+                            // Identification par code QR D'ABORD : l'identifiant numerique est
+                            // local a chaque appareil et peut designer deux athletes differents.
+                            // Ecraser la fiche partageant le meme numero mais pas le meme QR
+                            // revient a perdre un athlete (et a lui coller la photo de l'autre).
+                            var local = memberDao.getMemberByQrCode(qrCode)
+                            if (local == null) {
+                                val sameId = memberDao.getMemberByIdDirect(id)
+                                if (sameId != null) {
+                                    // Meme numero, autre athlete : on ne touche JAMAIS a la fiche locale.
+                                    conflicts++
+                                    continue
+                                }
+                            }
                             if (local != null) {
                                 var photoUrl = local.photoUrl
                                 if (photoUrl.isBlank() && photoObject.isNotBlank()) {
@@ -1312,10 +1436,10 @@ class SupabaseSyncService(
                                         photoObject
                                     )
                                     if (bytes != null) {
-                                        photoUrl = PhotoCompressor.saveBytes(context, "member_$id", bytes) ?: ""
+                                        photoUrl = PhotoCompressor.saveBytes(context, "member_${local.id}", bytes) ?: ""
                                     }
                                 }
-                                val synced = cloud.copy(photoUrl = photoUrl)
+                                val synced = cloud.copy(id = local.id, photoUrl = photoUrl)
                                 if (synced != local) {
                                     memberDao.updateMember(synced)
                                     received++
@@ -1339,32 +1463,16 @@ class SupabaseSyncService(
                             received++
                         }
 
-                        // Drop ghosts (rows deleted on another device). Only when the response is
-                        // complete and this device has nothing left to push for members.
-                        val total = response.header("Content-Range")
-                            ?.substringAfter('/', "")
-                            ?.toIntOrNull()
-                        val complete = total == null || total == arr.length()
-                        if (complete && syncQueueDao.countPendingForType("MEMBERS") == 0) {
-                            val stale = memberDao.getAllMembersDirect().filterNot { it.id in remoteIds }
-                            stale.forEach {
-                                memberDao.deleteMember(it)
-                                // Cascade : les empreintes faciales d'un athlete disparu du cloud
-                                // ne doivent jamais rester sur la tablette.
-                                runCatching {
-                                    FaceDatabase.getInstance(context).faceTemplateDao()
-                                        .deleteForMember(it.id)
-                                }
-                            }
-                            if (stale.isNotEmpty()) {
-                                Log.i("SupabaseSync", "Removed ${stale.size} member(s) absent from cloud")
-                            }
+                        // Aucune suppression automatique des fiches absentes du cloud : une
+                        // reponse partielle, une autre tablette ou un identifiant different
+                        // suffirait a effacer des athletes bien reels sur cet appareil.
+                        // Les suppressions restent une action explicite de l'administrateur.
+                        val complete = totalRows == null || totalRows == arr.length()
+                        if (!complete) {
                         }
                     }
                 }
-            }
         } catch (e: Exception) {
-            Log.w("SupabaseSync", "Error pulling members: ${e.message}")
         }
         return received to conflicts
     }
@@ -1400,6 +1508,8 @@ class SupabaseSyncService(
                 val gcIdx = cursor.getColumnIndexOrThrow("groupCode")
                 val bnIdx = cursor.getColumnIndexOrThrow("beltName")
                 val stIdx = cursor.getColumnIndexOrThrow("status")
+                val isdIdx = cursor.getColumnIndexOrThrow("injuryStartDate")
+                val iedIdx = cursor.getColumnIndexOrThrow("injuryEndDate")
                 val rdIdx = cursor.getColumnIndexOrThrow("registrationDate")
                 val puIdx = cursor.getColumnIndexOrThrow("photoUrl")
                 val ntIdx = cursor.getColumnIndexOrThrow("notes")
@@ -1415,6 +1525,8 @@ class SupabaseSyncService(
                             groupCode = cursor.getString(gcIdx),
                             beltName = cursor.getString(bnIdx),
                             status = cursor.getString(stIdx),
+                            injuryStartDate = cursor.getString(isdIdx),
+                            injuryEndDate = cursor.getString(iedIdx),
                             registrationDate = cursor.getString(rdIdx),
                             photoUrl = cursor.getString(puIdx),
                             notes = cursor.getString(ntIdx)
@@ -1436,6 +1548,8 @@ class SupabaseSyncService(
                     put("group_code", m.groupCode)
                     put("belt_name", m.beltName)
                     put("status", m.status)
+                    put("injury_start_date", m.injuryStartDate)
+                    put("injury_end_date", m.injuryEndDate)
                     put("registration_date", m.registrationDate)
                     put("photo_url", m.photoUrl)
                     put("notes", m.notes)
@@ -1588,11 +1702,22 @@ class SupabaseSyncService(
                         groupCode = obj.optString("group_code", "U15"),
                         beltName = obj.optString("belt_name", "BLANCHE"),
                         status = obj.optString("status", "ACTIF"),
+                        injuryStartDate = obj.optString("injury_start_date", ""),
+                        injuryEndDate = obj.optString("injury_end_date", ""),
                         registrationDate = obj.optString("registration_date", "2026-09-01"),
                         photoUrl = obj.optString("photo_url", ""),
                         notes = obj.optString("notes", "")
                     )
-                    memberDao.insertMember(m)
+                    // insertMember utilise REPLACE : restaurer un identifiant deja pris par un
+                    // AUTRE athlete effacerait sa fiche. On aligne d'abord sur le code QR.
+                    val byQr = if (m.qrCode.isNotBlank()) memberDao.getMemberByQrCode(m.qrCode) else null
+                    val byId = if (m.id > 0) memberDao.getMemberByIdDirect(m.id) else null
+                    val toInsert = when {
+                        byQr != null -> m.copy(id = byQr.id)
+                        byId != null -> m.copy(id = 0L)
+                        else -> m
+                    }
+                    memberDao.insertMember(toInsert)
                     restoredMembers++
                 }
             }

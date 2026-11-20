@@ -11,11 +11,17 @@ import java.text.Normalizer
  */
 object NameKey {
 
+    // Regex PRECOMPILEES : canonical() est appele des milliers de fois (rosters, recherche,
+    // corrections d'emargement). Les compiler a chaque appel rendait l'ouverture des fenetres
+    // de seance tres lente.
+    private val combiningMarks = Regex("\\p{Mn}")
+    private val whitespace = Regex("\\s+")
+
     fun canonical(name: String): String {
         val lowered = name.trim().lowercase().replace("’", "'")
         val noAccents = Normalizer.normalize(lowered, Normalizer.Form.NFD)
-            .replace(Regex("\\p{Mn}"), "")
-        return noAccents.replace(Regex("\\s+"), " ").trim()
+            .replace(combiningMarks, "")
+        return noAccents.replace(whitespace, " ").trim()
     }
 
     fun same(a: String, b: String): Boolean = canonical(a) == canonical(b)

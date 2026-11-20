@@ -30,7 +30,10 @@ data class ScheduledTrainingSession(
     val recurrenceEndDate: String? = null,
     val seriesId: String? = null,
     val notes: String = "",
-    val status: SessionStatus = SessionStatus.SCHEDULED
+    val status: SessionStatus = SessionStatus.SCHEDULED,
+    /** Dates (YYYY-MM-DD) pour lesquelles ce créneau a été annulé : la séance
+     *  de ce jour-là ne compte PAS comme absence pour les athlètes concernés. */
+    val cancelledDates: List<String> = emptyList()
 ) {
     val durationMinutes: Int
         get() {

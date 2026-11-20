@@ -39,6 +39,7 @@ import androidx.compose.material.icons.filled.DocumentScanner
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.FamilyRestroom
+import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.MilitaryTech
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
@@ -219,6 +220,10 @@ fun AddEditMemberDialog(
     var status by remember {
         mutableStateOf(initialMember?.status ?: "ACTIF")
     }
+    var injuryStart by remember { mutableStateOf(initialMember?.injuryStartDate ?: "") }
+    var injuryEnd by remember { mutableStateOf(initialMember?.injuryEndDate ?: "") }
+    var showInjuryStartPicker by remember { mutableStateOf(false) }
+    var showInjuryEndPicker by remember { mutableStateOf(false) }
 
     // ---- Enrolement facial (athlete deja enregistre uniquement) ----
     var showFaceEnrollment by remember { mutableStateOf(false) }
@@ -389,16 +394,14 @@ fun AddEditMemberDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Card(
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             border = CardDefaults.outlinedCardBorder(),
-            elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
             modifier = Modifier
-                .widthIn(max = 680.dp)
-                .fillMaxWidth(0.95f)
-                .fillMaxHeight(0.92f)
+                .fillMaxWidth()
+                .fillMaxHeight(0.94f)
                 .imePadding()
-                .padding(vertical = 16.dp)
                 .testTag("add_edit_member_dialog")
         ) {
             Column(modifier = Modifier.fillMaxWidth()) {
@@ -1111,6 +1114,95 @@ fun AddEditMemberDialog(
                         onClick = { status = "SUSPENDU" },
                         label = { Text("Suspendu") }
                     )
+                    FilterChip(
+                        selected = status == "BLESSE",
+                        onClick = { status = "BLESSE" },
+                        label = { Text("Blessé") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.MedicalServices,
+                                contentDescription = null,
+                                modifier = Modifier.size(15.dp)
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Color(0xFFFFE0B2),
+                            selectedLabelColor = Color(0xFFE65100)
+                        ),
+                        modifier = Modifier.testTag("member_status_blesse")
+                    )
+                }
+
+                // Periode de blessure : exclut l'athlete des absences et des SMS.
+                if (status == "BLESSE") {                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = injuryStart,
+                            onValueChange = { injuryStart = it },
+                            label = { Text("Début blessure") },
+                            readOnly = true,
+                            trailingIcon = {
+                                IconButton(onClick = { showInjuryStartPicker = true }) {
+                                    Icon(Icons.Default.CalendarToday, contentDescription = "Choisir")
+                                }
+                            },
+                            modifier = Modifier.weight(1f).testTag("injury_start_field")
+                        )
+                        OutlinedTextField(
+                            value = injuryEnd,
+                            onValueChange = { injuryEnd = it },
+                            label = { Text("Fin (vide = en cours)") },
+                            readOnly = true,
+                            trailingIcon = {
+                                IconButton(onClick = { showInjuryEndPicker = true }) {
+                                    Icon(Icons.Default.CalendarToday, contentDescription = "Choisir")
+                                }
+                            },
+                            modifier = Modifier.weight(1f).testTag("injury_end_field")
+                        )
+                    }
+                }
+
+                if (showInjuryStartPicker) {
+                    val pickerState = rememberDatePickerState()
+                    DatePickerDialog(
+                        onDismissRequest = { showInjuryStartPicker = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                pickerState.selectedDateMillis?.let {
+                                    injuryStart = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                                        .format(java.util.Date(it))
+                                }
+                                showInjuryStartPicker = false
+                            }) { Text("OK") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showInjuryStartPicker = false }) { Text("Annuler") }
+                        }
+                    ) { DatePicker(state = pickerState) }
+                }
+
+                if (showInjuryEndPicker) {
+                    val pickerState = rememberDatePickerState()
+                    DatePickerDialog(
+                        onDismissRequest = { showInjuryEndPicker = false },
+                        confirmButton = {
+                            TextButton(onClick = {
+                                pickerState.selectedDateMillis?.let {
+                                    injuryEnd = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US)
+                                        .apply { timeZone = java.util.TimeZone.getTimeZone("UTC") }
+                                        .format(java.util.Date(it))
+                                }
+                                showInjuryEndPicker = false
+                            }) { Text("OK") }
+                        },
+                        dismissButton = {
+                            TextButton(onClick = { showInjuryEndPicker = false }) { Text("Annuler") }
+                        }
+                    ) { DatePicker(state = pickerState) }
                 }
 
                 // ==========================================
@@ -1296,6 +1388,8 @@ fun AddEditMemberDialog(
                                     beltName = selectedBelt.name,
                                     qrCode = cleanQr,
                                     status = status,
+                                    injuryStartDate = if (status == "BLESSE") injuryStart else "",
+                                    injuryEndDate = if (status == "BLESSE") injuryEnd else "",
                                     photoUrl = resolvedPhoto,
                                     notes = notes.trim()
                                 ) ?: Member(
@@ -1307,6 +1401,8 @@ fun AddEditMemberDialog(
                                     beltName = selectedBelt.name,
                                     qrCode = cleanQr,
                                     status = status,
+                                    injuryStartDate = if (status == "BLESSE") injuryStart else "",
+                                    injuryEndDate = if (status == "BLESSE") injuryEnd else "",
                                     registrationDate = java.text.SimpleDateFormat(
                                         "yyyy-MM-dd", java.util.Locale.US
                                     ).format(java.util.Date()),

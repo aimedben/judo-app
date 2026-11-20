@@ -21,6 +21,12 @@ object MemberQr {
     /** Un numero de carte est un entier de 1 a 8 chiffres. */
     private val DIGITS_ONLY = Regex("^\\d{1,8}$")
 
+    /**
+     * Code court sur : caracteres ASCII surs uniquement. Un « / » (ex. « JCS-2026/2027 »
+     * lu sur la ligne SAISON d'une carte) ne doit jamais devenir un code QR.
+     */
+    private val SAFE_CODE = Regex("^[A-Za-z0-9._-]{1,$MAX_CODE_LENGTH}$")
+
     /** Code deja produit par l'application : "JCS-355", "jcs 355", "JCS355". */
     private val APP_CODE = Regex("(?i)^\\s*jcs\\s*[-–—]?\\s*(\\d{1,8})\\s*$")
 
@@ -96,8 +102,7 @@ object MemberQr {
     }
 
     private fun isShortCode(value: String): Boolean =
-        value.length <= MAX_CODE_LENGTH && !value.contains(' ') && !value.contains('\n') &&
-            value.any { it.isLetterOrDigit() }
+        SAFE_CODE.matches(value) && value.any { it.isLetterOrDigit() }
 
     /** "jcs 355" / "JCS355" / "355" -> "JCS-355" ; autre code court -> majuscules. */
     private fun toAppCode(value: String): String {

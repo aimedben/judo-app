@@ -1,6 +1,8 @@
 package com.example.ui.screens
 
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,6 +23,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Business
@@ -29,6 +32,9 @@ import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.ExitToApp
+import androidx.compose.material.icons.filled.Face
+import androidx.compose.material.icons.filled.FileDownload
+import androidx.compose.material.icons.filled.FileUpload
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Palette
@@ -53,6 +59,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -69,10 +76,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AdminProfile
 import com.example.data.model.ClubSettings
+import com.example.data.local.face.FaceDatasetTransfer
 import com.example.ui.ThemePreference
+import com.example.ui.components.HeroStat
+import com.example.ui.components.JudoHeroCard
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import kotlinx.coroutines.launch
 
 @Composable
 fun AdminSettingsScreen(
@@ -115,28 +126,26 @@ fun AdminSettingsScreen(
         verticalArrangement = Arrangement.spacedBy(18.dp),
         contentPadding = PaddingValues(bottom = 32.dp)
     ) {
-        // Top Back & Title Bar
+        // Banniere heros (style accueil du dashboard)
         item {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
-                }
-                Column {
-                    Text(
-                        text = "Paramètres de l'Application",
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Text(
-                        text = "Configuration du dojo, apparence et sécurité",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    )
-                }
-            }
+            JudoHeroCard(
+                title = "Paramètres",
+                subtitle = "Configuration du dojo, apparence et sécurité",
+                icon = Icons.Default.Settings,
+                onBack = onBack,
+                stats = listOf(
+                    HeroStat(value = clubSettings.clubName.take(14), label = "Club"),
+                    HeroStat(
+                        value = when (currentThemePreference) {
+                            ThemePreference.DARK -> "Sombre"
+                            ThemePreference.LIGHT -> "Clair"
+                            else -> "Auto"
+                        },
+                        label = "Thème"
+                    ),
+                    HeroStat(value = clubSettings.season, label = "Saison")
+                )
+            )
         }
 
         // Section A: Apparence (Thème clair, sombre, automatique)
@@ -672,6 +681,11 @@ fun AdminSettingsScreen(
         item {
             AboutLicensesCard()
         }
+
+        // Tout en bas : transfert de la dataset de reconnaissance faciale
+        item {
+            FaceDatasetCard()
+        }
     }
 
     if (showClearDatabaseConfirmDialog) {
@@ -826,6 +840,153 @@ private fun AboutLicensesCard() {
                 modifier = Modifier.testTag("edgeface_license_link")
             ) {
                 Text("Voir la licence EdgeFace (CC BY-NC-SA 4.0)")
+            }
+        }
+    }
+}
+/**
+ * Transfert de la dataset de reconnaissance faciale entre appareils.
+ *
+ * Les empreintes (vecteurs) dorment chiffrees avec une cle du Keystore propre a CET appareil :
+ * l'export les dechiffre dans un fichier JSON choisi par l'admin, l'import les re-chiffre avec
+ * la cle du nouvel appareil. Aucune photo de visage ne circule.
+ */
+@Composable
+private fun FaceDatasetCard() {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var stats by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+    var message by remember { mutableStateOf<String?>(null) }
+    var isError by remember { mutableStateOf(false) }
+
+    suspend fun refreshStats() {
+        stats = runCatching { FaceDatasetTransfer.localStats(context) }.getOrNull()
+    }
+
+    androidx.compose.runtime.LaunchedEffect(Unit) { refreshStats() }
+
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/json")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        scope.launch {
+            runCatching { FaceDatasetTransfer.export(context, uri) }.fold(
+                onSuccess = { r ->
+                    isError = false
+                    message = "${r.templates} empreintes (${r.members} athlètes) exportées."
+                },
+                onFailure = { e ->
+                    isError = true
+                    message = "Échec de l'export : ${e.message ?: "erreur inconnue"}"
+                }
+            )
+            busy = false
+            refreshStats()
+        }
+    }
+
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        busy = true
+        scope.launch {
+            runCatching { FaceDatasetTransfer.import(context, uri) }.fold(
+                onSuccess = { r ->
+                    isError = r.imported == 0 && (r.unknownMembers > 0 || r.incompatible > 0)
+                    message = "${r.imported} empreintes importées • ${r.skippedExisting} déjà présentes • " +
+                        "${r.unknownMembers} athlètes introuvables • ${r.incompatible} incompatibles."
+                },
+                onFailure = { e ->
+                    isError = true
+                    message = "Échec de l'import : ${e.message ?: "fichier illisible"}"
+                }
+            )
+            busy = false
+            refreshStats()
+        }
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("face_dataset_card"),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Default.Face,
+                    contentDescription = null,
+                    tint = JudoRed,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(
+                    text = "Dataset reconnaissance faciale",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+            }
+            Text(
+                text = "Sauvegardez les empreintes (vecteurs) pour les réinstaller sur un nouvel " +
+                    "appareil, ou après un changement de tablette. Les visages eux-mêmes ne sont " +
+                    "jamais enregistrés ni exportés.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Text(
+                text = stats?.let { (templates, members) -> "$templates empreintes • $members athlètes enregistrés" }
+                    ?: "Calcul en cours…",
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+            )
+
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = {
+                        exportLauncher.launch("dataset-visages-jcs.json")
+                    },
+                    enabled = !busy && (stats?.first ?: 0) > 0,
+                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).testTag("face_dataset_export_btn")
+                ) {
+                    Icon(Icons.Default.FileDownload, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Télécharger", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+                OutlinedButton(
+                    onClick = { importLauncher.launch(arrayOf("*/*")) },
+                    enabled = !busy,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.weight(1f).testTag("face_dataset_import_btn")
+                ) {
+                    Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Uploader", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                }
+            }
+
+            if (busy) {
+                Text(
+                    text = "Traitement en cours…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            message?.let { msg ->
+                Text(
+                    text = msg,
+                    style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+                    color = if (isError) MaterialTheme.colorScheme.error else JudoSuccess
+                )
             }
         }
     }

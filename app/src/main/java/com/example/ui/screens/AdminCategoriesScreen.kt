@@ -201,20 +201,7 @@ fun AdminCategoriesScreen(
                                         )
                                     }
 
-                                    Surface(
-                                        shape = RoundedCornerShape(6.dp),
-                                        color = if (cat.isActive) JudoSuccess.copy(alpha = 0.15f) else Color.Gray.copy(alpha = 0.15f)
-                                    ) {
-                                        Text(
-                                            text = if (cat.isActive) "ACTIVE" else "DÉSACTIVÉE",
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontWeight = FontWeight.Bold,
-                                                fontSize = 9.sp,
-                                                color = if (cat.isActive) JudoSuccess else Color.Gray
-                                            )
-                                        )
-                                    }
+                                    
                                 }
 
                                 if (cat.description.isNotBlank()) {

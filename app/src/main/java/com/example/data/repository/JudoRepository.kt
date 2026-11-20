@@ -254,7 +254,9 @@ class JudoRepository(
             if (clean.isNotBlank() && clean != member.qrCode) {
                 val repaired = member.copy(qrCode = clean)
                 memberDao.updateMember(repaired)
-                syncService?.enqueueMember(repaired, "UPDATE")
+                // Reparation locale uniquement : l'ecriture distante partira lors de la
+                // prochaine synchronisation lancee par l'administrateur (jamais toute seule).
+                syncService?.enqueueMember(repaired, "UPDATE", pushImmediately = false)
                 fixed++
             }
         }

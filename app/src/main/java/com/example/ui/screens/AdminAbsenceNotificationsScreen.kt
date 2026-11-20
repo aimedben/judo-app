@@ -58,6 +58,9 @@ import com.example.data.model.ClubSettings
 import com.example.data.model.Member
 import com.example.data.model.ScheduledTrainingSession
 import com.example.ui.components.AbsentSmsDialog
+import com.example.ui.components.HeroActionButton
+import com.example.ui.components.HeroStat
+import com.example.ui.components.JudoHeroCard
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
@@ -126,44 +129,29 @@ fun AdminAbsenceNotificationsScreen(
             .testTag("absence_notifications_screen"),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        // Title & Back
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            IconButton(onClick = onBack, modifier = Modifier.testTag("absence_notifications_back_btn")) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Retour")
-            }
-            Column {
-                Text(
-                    text = "Notifications",
-                    style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
+        // Banniere heros (style accueil du dashboard)
+        JudoHeroCard(
+            title = "Notifications",
+            subtitle = "Absences répétées — $monthTitle",
+            icon = Icons.Default.Notifications,
+            onBack = onBack,
+            action = {
+                HeroActionButton(
+                    text = if (selectionMode) "Annuler" else "Sélectionner",
+                    icon = if (selectionMode) Icons.Default.Close else Icons.Default.DoneAll,
+                    onClick = {
+                        selectionMode = !selectionMode
+                        selectedIds = emptySet()
+                        confirmBatchDelete = false
+                    },
+                    modifier = Modifier.testTag("absence_notifications_select_toggle_btn")
                 )
-                Text(
-                    text = "Athletes absents 3 fois et plus — $monthTitle",
-                    style = MaterialTheme.typography.bodySmall.copy(
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                )
-            }
-            Spacer(modifier = Modifier.weight(1f))
-            OutlinedButton(
-                onClick = {
-                    selectionMode = !selectionMode
-                    selectedIds = emptySet()
-                    confirmBatchDelete = false
-                },
-                modifier = Modifier.testTag("absence_notifications_select_toggle_btn")
-            ) {
-                Icon(
-                    imageVector = if (selectionMode) Icons.Default.Close else Icons.Default.DoneAll,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(if (selectionMode) "Annuler" else "Sélectionner")
-            }
-        }
+            },
+            stats = listOf(
+                HeroStat(value = "${visibleAlerts.size}", label = "À relancer"),
+                HeroStat(value = "${selectedIds.size}", label = "Sélection")
+            )
+        )
 
         // Barre d'actions de la selection multiple : envoyer un SMS personnalise
         // au parent de chaque athlete (son numero = member.phone) ou supprimer

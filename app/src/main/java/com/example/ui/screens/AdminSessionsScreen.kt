@@ -83,13 +83,19 @@ import com.example.data.model.JudoCategory
 import com.example.data.model.Member
 import com.example.data.model.PastTrainingSession
 import com.example.ui.components.AbsentSmsDialog
+import com.example.ui.components.BottomSheetDialog
+import com.example.ui.components.HeroStat
+import com.example.ui.components.JudoHeroCard
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
 import com.example.util.AbsentSmsNotifier
+import com.example.util.CancelledSessionDays
+import com.example.util.GroupCodes
 import com.example.util.MemberQr
 import com.example.util.NameKey
+import com.example.ui.components.CancelledSessionDialog
 import kotlinx.coroutines.delay
 
 import com.example.data.model.CoachUser
@@ -114,6 +120,10 @@ fun AdminSessionsScreen(
     onCheckConflicts: (ScheduledTrainingSession, String?) -> List<SessionConflict> = { _, _ -> emptyList() },
     onCorrectAttendance: (String, String, Boolean) -> Unit,
     onDeletePastSessions: (List<String>) -> Unit = {},
+    cancelledSessionDays: List<CancelledSessionDays.Day> = emptyList(),
+    onCancelSessionDay: (groupCode: String, dateString: String) -> Unit = { _, _ -> },
+    onRestoreSessionDay: (groupCode: String, dateString: String) -> Unit = { _, _ -> },
+    onUpdateSessionDay: (oldGroup: String, oldDate: String, newGroup: String, newDate: String) -> Unit = { _, _, _, _ -> },
     initialTab: Int = 0,
     modifier: Modifier = Modifier
 ) {
@@ -123,6 +133,15 @@ fun AdminSessionsScreen(
     var deleteSelectionMode by remember { mutableStateOf(false) }
     var selectedForDeletion by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmMultiDelete by remember { mutableStateOf(false) }
+    // Journal « séances annulées » : dialogue ouvert (null = fermé / création).
+    var cancelledEditorTarget by remember {
+        mutableStateOf<CancelledSessionDays.Day?>(null)
+    }
+    var showCancelledDialog by remember { mutableStateOf(false) }
+    val todayStr = remember {
+        java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            .format(java.util.Date())
+    }
 
     var isCreateEditDialogOpen by remember { mutableStateOf(false) }
     var sessionToEdit by remember { mutableStateOf<ScheduledTrainingSession?>(null) }
@@ -146,43 +165,61 @@ fun AdminSessionsScreen(
                 .testTag("admin_sessions_screen"),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            // Mode Tabs: Planning Hebdo vs Historique & Émargements
-            Surface(
-                shape = RoundedCornerShape(12.dp),
-                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                border = CardDefaults.outlinedCardBorder()
+            JudoHeroCard(
+                title = "Séances & émargements",
+                subtitle = "Planning hebdomadaire et suivi des présences",
+                icon = Icons.Default.EventNote,
+                stats = listOf(
+                    HeroStat(value = "${scheduledSessions.size}", label = "Planifiées"),
+                    HeroStat(value = "${pastSessions.size}", label = "Terminées"),
+                    HeroStat(
+                        value = "${pastSessions.sumOf { it.effectivePresentCount }}",
+                        label = "Présences"
+                    )
+                )
+            )
+
+            // Onglets façon dashboard : pilules segmentees
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                TabRow(
-                    selectedTabIndex = currentMainTab,
-                    containerColor = Color.Transparent,
-                    divider = {}
-                ) {
-                    Tab(
-                        selected = currentMainTab == 0,
-                        onClick = { currentMainTab = 0 },
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(Icons.Default.EventNote, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Text("Planning Hebdo (${scheduledSessions.size})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            }
-                        }
-                    )
-                    Tab(
-                        selected = currentMainTab == 1,
-                        onClick = { currentMainTab = 1 },
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(Icons.Default.History, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Text("Historique & Émargements (${pastSessions.size})", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                            }
-                        }
-                    )
+                listOf(
+                    Triple("Planning", Icons.Default.EventNote, 0),
+                    Triple("Historique & émargements", Icons.Default.History, 1)
+                ).forEach { (label, tabIcon, index) ->
+                    val isSelectedTab = currentMainTab == index
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(if (isSelectedTab) JudoRed else Color.Transparent)
+                            .clickable { currentMainTab = index }
+                            .padding(vertical = 9.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = tabIcon,
+                            contentDescription = null,
+                            tint = if (isSelectedTab) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = label,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isSelectedTab) FontWeight.Bold else FontWeight.Medium,
+                                fontSize = 12.sp
+                            ),
+                            color = if (isSelectedTab) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1
+                        )
+                    }
                 }
             }
 
@@ -271,6 +308,19 @@ fun AdminSessionsScreen(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
             }
+            // « Annuler une séance » : compact, a gauche de « Supprimer des seances ».
+            TextButton(
+                onClick = { cancelledEditorTarget = null; showCancelledDialog = true }
+            ) {
+                Icon(
+                    imageVector = Icons.Default.EventNote,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(4.dp))
+                Text("Annuler une séance…", fontSize = 12.sp)
+            }
+            Spacer(modifier = Modifier.width(4.dp))
             TextButton(
                 onClick = {
                     deleteSelectionMode = !deleteSelectionMode
@@ -320,6 +370,79 @@ fun AdminSessionsScreen(
             }
         }
 
+        // Séances annulees (journal partage) : liste + edition + suppresion
+        if (cancelledSessionDays.isNotEmpty()) {
+            Text(
+                text = "Séances annulées (${cancelledSessionDays.size})",
+                style = MaterialTheme.typography.labelLarge.copy(
+                    fontWeight = FontWeight.Bold,
+                    color = JudoSuccess
+                )
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(cancelledSessionDays.sortedByDescending { it.dateString }, key = { it.key }) { day ->
+                    val catName = categories
+                        .firstOrNull { cat ->
+                            GroupCodes.matches(day.groupCode, cat.groupCode) ||
+                                cat.groupCode.equals(day.groupCode, ignoreCase = true)
+                        }?.name ?: day.groupCode
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = JudoSuccess.copy(alpha = 0.10f),
+                        border = BorderStroke(1.dp, JudoSuccess.copy(alpha = 0.4f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Column {
+                                Text(
+                                    text = catName,
+                                    style = MaterialTheme.typography.labelLarge.copy(
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                )
+                                Text(
+                                    text = day.dateString,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                )
+                            }
+                            // Editer : changement de date et/ou de categorie
+                            IconButton(
+                                onClick = { cancelledEditorTarget = day; showCancelledDialog = true },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Edit,
+                                    contentDescription = "Modifier",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                            // Supprimer = retirer du journal (l'absence re-compte)
+                            IconButton(
+                                onClick = { onRestoreSessionDay(day.groupCode, day.dateString) },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Delete,
+                                    contentDescription = "Supprimer",
+                                    tint = JudoRed,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // List of Sessions
         if (filteredSessions.isEmpty()) {
             Box(
@@ -341,7 +464,7 @@ fun AdminSessionsScreen(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
                 contentPadding = PaddingValues(bottom = 24.dp)
             ) {
-                items(filteredSessions) { session ->
+                items(filteredSessions, key = { it.id }) { session ->
                     val total = session.effectivePresentCount + session.effectiveAbsentCount
                     val rate = if (total > 0) ((session.effectivePresentCount.toDouble() / total) * 100).toInt() else 0
 
@@ -540,6 +663,14 @@ fun AdminSessionsScreen(
         val sessionRoster = remember(members, session.id, session.groupCode) {
             AbsentSmsNotifier.membersOfGroup(members, session.groupCode)
         }
+        // Index canonique calcule UNE seule fois : evite des milliers de normalisations
+        // de noms (et autant de Regex) a chaque ouverture / frappe dans la recherche.
+        val rosterByKey = remember(sessionRoster) {
+            sessionRoster.map { NameKey.canonical(it.fullName) to it }
+        }
+        val rosterKeys = remember(rosterByKey) {
+            rosterByKey.mapTo(HashSet()) { it.first }
+        }
         // Miroir local du roster : chaque changement confirme est persiste via onCorrectAttendance.
         var presentNames by remember(session.id) {
             mutableStateOf(
@@ -549,9 +680,12 @@ fun AdminSessionsScreen(
                     .toSet()
             )
         }
+        val presentKeys = remember(presentNames) {
+            presentNames.mapTo(HashSet()) { NameKey.canonical(it) }
+        }
 
         fun isPresent(member: Member): Boolean =
-            presentNames.any { NameKey.same(it, member.fullName) }
+            presentKeys.contains(NameKey.canonical(member.fullName))
 
         fun requestToggle(name: String, markPresent: Boolean) {
             pendingToggleName = name
@@ -572,30 +706,46 @@ fun AdminSessionsScreen(
             pendingToggleName = null
         }
 
-        val presentRows: List<Pair<Member?, String>> = buildList {
-            sessionRoster.filter { isPresent(it) }.forEach { add(it to it.fullName) }
-            presentNames
-                .filter { name -> sessionRoster.none { NameKey.same(it.fullName, name) } }
-                .sorted()
-                .forEach { add(null to it) }
-        }
-        val absentRows: List<Pair<Member?, String>> = buildList {
-            sessionRoster.filterNot { isPresent(it) }.forEach { add(it to it.fullName) }
-            session.absentMemberNames
-                .filter { name ->
-                    presentNames.none { NameKey.same(it, name) } &&
-                        sessionRoster.none { NameKey.same(it.fullName, name) }
+        // Rosters derives : calcules UNIQUEMENT quand l'etat change (basculer une presence,
+        // roster, seance) et NON a chaque recomposition. Avant, chaque frappe dans le champ
+        // recherche ou chaque feedback relancait toutes les comparaisons de noms — la fenetre
+        // gelait, surtout sur des grandes seances. Les noms hors-roster sont dedupliques par
+        // cle canonique : sans ce dedupliqué, deux variantes du meme nom donnaient deux cles
+        // LazyColumn differentes ou dupliques — crash "duplicate key".
+        val presentRows: List<Pair<Member?, String>> =
+            remember(session.id, rosterByKey, presentKeys, presentNames) {
+                buildList {
+                    rosterByKey.forEach { (key, member) ->
+                        if (key in presentKeys) add(member to member.fullName)
+                    }
+                    val seen = HashSet(rosterKeys)
+                    presentNames.sorted().forEach { name ->
+                        if (seen.add(NameKey.canonical(name))) add(null to name)
+                    }
                 }
-                .sorted()
-                .forEach { add(null to it) }
-        }
+            }
+        val absentRows: List<Pair<Member?, String>> =
+            remember(session.id, rosterByKey, rosterKeys, presentKeys, session.absentMemberNames) {
+                buildList {
+                    rosterByKey.forEach { (key, member) ->
+                        if (key !in presentKeys) add(member to member.fullName)
+                    }
+                    val seen = HashSet(rosterKeys)
+                    session.absentMemberNames.sorted().forEach { name ->
+                        val key = NameKey.canonical(name)
+                        if (key !in presentKeys && seen.add(key)) add(null to name)
+                    }
+                }
+            }
         val visibleRows = (if (detailTab == 0) presentRows else absentRows)
             .filter { searchQuery.isBlank() || it.second.contains(searchQuery, ignoreCase = true) }
-        val absentMemberObjects = remember(absentRows) {
+        // absentRows etant desormais memoise, cette remember ne se recalcule plus a chaque
+        // recomposition, contrairement a avant (cle recreee en permanence).
+        val absentMemberObjects = remember(absentRows, sessionRoster) {
             AbsentSmsNotifier.resolveAbsentMembers(absentRows.map { it.second }, sessionRoster)
         }
 
-        Dialog(onDismissRequest = { selectedSessionDetail = null }) {
+        BottomSheetDialog(onDismiss = { selectedSessionDetail = null }) {
             if (showAbsentSmsDialog) {
                 AbsentSmsDialog(
                     absentMembers = absentMemberObjects,
@@ -606,18 +756,18 @@ fun AdminSessionsScreen(
                 )
             }
             Card(
-                shape = RoundedCornerShape(20.dp),
+                shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 border = CardDefaults.outlinedCardBorder(),
+                elevation = CardDefaults.cardElevation(defaultElevation = 16.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .widthIn(max = 620.dp)
-                    .padding(vertical = 8.dp)
                     .testTag("hist_correction_dialog")
             ) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .verticalScroll(rememberScrollState())
                         .padding(20.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
@@ -758,7 +908,11 @@ fun AdminSessionsScreen(
                         } else {
                             items(
                                 items = visibleRows,
-                                key = { (member, name) -> member?.let { "m_${it.id}" } ?: "n_$name" }
+                                // Cle canonique pour les noms hors-roster : deux variantes
+                                // du meme nom (accents, casse) ne creent plus de doublon.
+                                key = { (member, name) ->
+                                    member?.let { "m_${it.id}" } ?: "n_${NameKey.canonical(name)}"
+                                }
                             ) { (member, name) ->
                                 val isPresentNow = if (member != null) {
                                     isPresent(member)
@@ -914,6 +1068,34 @@ fun AdminSessionsScreen(
             }
         )
     }
+
+    if (showCancelledDialog) {
+        CancelledSessionDialog(
+            categories = categories,
+            cancelledSessionDays = cancelledSessionDays,
+            todayStr = todayStr,
+            editTarget = cancelledEditorTarget,
+            onCancelDay = { groupCode, dateString ->
+                onCancelSessionDay(groupCode, dateString)
+                showCancelledDialog = false
+                cancelledEditorTarget = null
+            },
+            onRestoreDay = { groupCode, dateString ->
+                onRestoreSessionDay(groupCode, dateString)
+                showCancelledDialog = false
+                cancelledEditorTarget = null
+            },
+            onUpdateDay = { oldGroup, oldDate, newGroup, newDate ->
+                onUpdateSessionDay(oldGroup, oldDate, newGroup, newDate)
+                showCancelledDialog = false
+                cancelledEditorTarget = null
+            },
+            onDismiss = {
+                showCancelledDialog = false
+                cancelledEditorTarget = null
+            }
+        )
+    }
 }
 
 @Composable
@@ -976,7 +1158,7 @@ private fun AttendanceEditableRow(
             }
         ) {
             Text(
-                text = if (isPresent) "Pr?sent ?" else "Absent",
+                        text = if (isPresent) "Présent ✓" else "Absent",
                 style = MaterialTheme.typography.labelSmall.copy(
                     fontSize = 12.sp,
                     fontWeight = FontWeight.Bold,

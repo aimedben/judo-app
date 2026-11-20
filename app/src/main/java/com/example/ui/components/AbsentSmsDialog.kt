@@ -6,7 +6,6 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -43,6 +42,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -128,8 +128,15 @@ fun AbsentSmsDialog(
     var currentIndex by remember { mutableIntStateOf(0) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
+    // Modèle du message : toujours pré-rempli avec le modèle officiel du club,
+    // mais personnalisable par le coach (emplacements {NOM} {DATE} {HEURE} {CLUB}).
+    var messageTemplate by remember { mutableStateOf(AbsentSmsNotifier.DEFAULT_MESSAGE_TEMPLATE) }
+    // Brouillons édités par destinataire dans l'étape de revue (clé = memberId).
+    val editableDrafts = remember { mutableStateMapOf<Long, String>() }
+
     val messageFor: (AbsentSmsNotifier.SmsRecipient) -> String = { recipient ->
-        AbsentSmsNotifier.buildMessage(
+        AbsentSmsNotifier.messageFromTemplate(
+            template = messageTemplate,
             memberName = recipient.memberName,
             sessionDate = sessionDate,
             sessionStart = sessionStartTime,
@@ -137,12 +144,11 @@ fun AbsentSmsDialog(
         )
     }
 
-    fun openSmsApp(recipient: AbsentSmsNotifier.SmsRecipient) {
-        val body = messageFor(recipient)
+    fun openSmsApp(recipient: AbsentSmsNotifier.SmsRecipient, bodyOverride: String? = null) {
+        val body = bodyOverride ?: messageFor(recipient)
         val intent = SmsIntentFactory.buildIntent(recipient.normalizedPhone, body)
         if (!SmsIntentFactory.canHandle(context, intent)) {
             // Never log the phone number itself.
-            Log.w("AbsentSms", "No SMS application available to handle ACTION_SENDTO/smsto")
             errorMessage = "Aucune application SMS n'est disponible sur cet appareil."
             return
         }
@@ -153,10 +159,8 @@ fun AbsentSmsDialog(
                 preparedMemberIds.add(recipient.memberId)
             }
         } catch (_: ActivityNotFoundException) {
-            Log.w("AbsentSms", "ActivityNotFoundException while opening the SMS application")
             errorMessage = "Aucune application SMS n'est disponible sur cet appareil."
         } catch (e: Exception) {
-            Log.w("AbsentSms", "Could not open the SMS application: ${e.javaClass.simpleName}")
             errorMessage = "Impossible d'ouvrir l'application SMS."
         }
     }
@@ -268,14 +272,29 @@ fun AbsentSmsDialog(
         },
         text = {
             when (stage) {
-                SmsStage.RECAP -> SmsRecapContent(plan = plan, noSmsAppAvailable = noSmsAppAvailable)
-                SmsStage.REVIEW -> SmsReviewContent(
+                SmsStage.RECAP -> SmsRecapContent(
                     plan = plan,
-                    currentIndex = currentIndex,
-                    preparedMemberIds = preparedMemberIds,
-                    errorMessage = errorMessage,
-                    messageFor = messageFor
+                    noSmsAppAvailable = noSmsAppAvailable,
+                    messageTemplate = messageTemplate,
+                    onTemplateChange = { messageTemplate = it },
+                    exampleMessage = plan.recipients.firstOrNull()?.let { messageFor(it) }.orEmpty()
                 )
+                SmsStage.REVIEW -> {
+                    val recipient = plan.recipients.getOrNull(currentIndex)
+                    val draft = recipient?.let { editableDrafts[it.memberId] }
+                        ?: recipient?.let { messageFor(it) }
+                        ?: ""
+                    SmsReviewContent(
+                        plan = plan,
+                        currentIndex = currentIndex,
+                        preparedMemberIds = preparedMemberIds,
+                        errorMessage = errorMessage,
+                        draft = draft,
+                        onDraftChange = { value ->
+                            recipient?.let { editableDrafts[it.memberId] = value }
+                        }
+                    )
+                }
                 SmsStage.DIRECT -> SmsDirectContent(
                     plan = plan,
                     lines = directLines,
@@ -319,7 +338,11 @@ fun AbsentSmsDialog(
                     val isLast = currentIndex >= plan.recipients.lastIndex
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(
-                            onClick = { recipient?.let { openSmsApp(it) } },
+                            onClick = {
+                                // Le message personnalisé (édité ou modèle pré-rempli) est
+                                // toujours celui affiché dans le champ de revue.
+                                recipient?.let { openSmsApp(it, editableDrafts[it.memberId]) }
+                            },
                             enabled = recipient != null,
                             colors = ButtonDefaults.buttonColors(containerColor = JudoRed),
                             modifier = Modifier.testTag("absent_sms_open_btn")
@@ -409,7 +432,10 @@ fun AbsentSmsDialog(
 @Composable
 private fun SmsRecapContent(
     plan: AbsentSmsNotifier.SmsPlan,
-    noSmsAppAvailable: Boolean
+    noSmsAppAvailable: Boolean,
+    messageTemplate: String,
+    onTemplateChange: (String) -> Unit,
+    exampleMessage: String
 ) {
     Column(
         modifier = Modifier
@@ -443,6 +469,54 @@ private fun SmsRecapContent(
                 color = JudoWarning,
                 testTag = "absent_sms_no_app_warning"
             )
+        }
+
+        // ---- Modèle du message : toujours pré-rempli, personnalisable -------------
+        if (plan.absentCount > 0) {
+            Text(
+                text = "Message envoyé — personnalisable",
+                style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+                modifier = Modifier.testTag("absent_sms_template_title")
+            )
+            OutlinedTextField(
+                value = messageTemplate,
+                onValueChange = onTemplateChange,
+                label = { Text("Modèle du message") },
+                supportingText = {
+                    Text(
+                        text = "Emplacements : {NOM} est remplacé par le nom de l'absent " +
+                            "(propre à chaque message), {DATE} par la date, {HEURE} par l'heure, " +
+                            "{CLUB} par le club.",
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                },
+                minLines = 5,
+                maxLines = 8,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("absent_sms_template_edit")
+            )
+            if (exampleMessage.isNotBlank()) {
+                Surface(
+                    shape = RoundedCornerShape(10.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(10.dp)) {
+                        Text(
+                            text = "Aperçu pour un destinataire :",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        )
+                        Text(
+                            text = exampleMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.testTag("absent_sms_template_preview")
+                        )
+                    }
+                }
+            }
         }
 
         if (!plan.hasRecipients) {
@@ -640,7 +714,8 @@ private fun SmsReviewContent(
     currentIndex: Int,
     preparedMemberIds: List<Long>,
     errorMessage: String?,
-    messageFor: (AbsentSmsNotifier.SmsRecipient) -> String
+    draft: String,
+    onDraftChange: (String) -> Unit
 ) {
     val recipient = plan.recipients.getOrNull(currentIndex) ?: return
 
@@ -661,19 +736,24 @@ private fun SmsReviewContent(
             style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
         )
 
-        Surface(
-            shape = RoundedCornerShape(10.dp),
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                text = messageFor(recipient),
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier
-                    .padding(12.dp)
-                    .testTag("absent_sms_message_preview")
-            )
-        }
+        // Message déjà rempli avec le modèle (ou la personnalisation) ;
+        // le coach peut l'ajuster spécifiquement pour ce destinataire avant l'ouverture de l'app.
+        OutlinedTextField(
+            value = draft,
+            onValueChange = onDraftChange,
+            label = { Text("Message pour ce destinataire (pré-rempli, modifiable)") },
+            supportingText = {
+                Text(
+                    text = "Ce message partira exactement comme il est écrit ici.",
+                    style = MaterialTheme.typography.labelSmall
+                )
+            },
+            minLines = 6,
+            maxLines = 10,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("absent_sms_message_edit")
+        )
 
         val isPrepared = recipient.memberId in preparedMemberIds
         Row(

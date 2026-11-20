@@ -45,6 +45,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Message
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhotoCamera
@@ -1208,6 +1209,7 @@ fun CoachSessionSummaryScreen(
     sessionAttendances: List<AttendanceWithMember>,
 onValidateAndSave: (String) -> Unit,
 onCancelSession: () -> Unit = {},
+onBackToPointage: () -> Unit = {},
 modifier: Modifier = Modifier,
     clubName: String = ""
 ) {
@@ -1272,8 +1274,44 @@ modifier: Modifier = Modifier,
             verticalArrangement = Arrangement.SpaceBetween,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Column(
+            Row(
                 modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Start
+            ) {
+                // Retour au pointage : le récapitulatif n'est pas encore un Engagement
+                // officiel, le coach peut corriger les pointages sans tout sauvegarder.
+                OutlinedButton(
+                    onClick = onBackToPointage,
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+                    ),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp),
+                    modifier = Modifier
+                        .height(40.dp)
+                        .testTag("coach_summary_back_to_pointage_btn")
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Retour au pointage",
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "Retour au pointage",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold)
+                    )
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    // Le contenu du milieu s'etire/s'ajuste a l'espace restant : sur un
+                    // petit telephone, les boutons « Valider / Annuler » restent visibles
+                    // en bas au lieu d'etre coupes hors ecran.
+                    .weight(1f),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Box(
@@ -1407,11 +1445,11 @@ modifier: Modifier = Modifier,
  
                 Spacer(modifier = Modifier.height(8.dp))
  
-                // Scrollable List of presents / absents
+                // Scrollable List of presents / absents (s'ajuste a l'espace restant)
                 LazyColumn(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(180.dp),
+                        .weight(1f),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     val currentList = if (selectedTabIndex == 0) presentMembers else absentMembers

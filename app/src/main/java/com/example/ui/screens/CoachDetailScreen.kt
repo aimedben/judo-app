@@ -39,11 +39,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -100,8 +102,12 @@ fun CoachDetailScreen(
     dateParser.timeZone = TimeZone.getTimeZone("UTC")
     dateDisplay.timeZone = TimeZone.getTimeZone("UTC")
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // ===== En-tete (gradient + photo + identite) =====
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+    ) {
+        // ===== En-tete (gradient + photo + identite) — defile avec la fiche =====
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -132,15 +138,25 @@ fun CoachDetailScreen(
                     )
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp),
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp, bottom = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(9.dp)
                 ) {
+                    // Grande photo du coach (128 dp) avec anneau dore
                     Box(
                         modifier = Modifier
-                            .size(74.dp)
-                            .border(2.dp, JudoGold, CircleShape)
+                            .size(128.dp)
+                            .shadow(
+                                elevation = 18.dp,
+                                shape = CircleShape,
+                                ambientColor = Color.Black.copy(alpha = 0.35f),
+                                spotColor = Color.Black.copy(alpha = 0.35f)
+                            )
+                            .border(3.dp, JudoGold.copy(alpha = 0.85f), CircleShape)
+                            .padding(5.dp)
                             .clip(CircleShape)
                             .background(Color.White.copy(alpha = 0.12f)),
                         contentAlignment = Alignment.Center
@@ -156,50 +172,55 @@ fun CoachDetailScreen(
                             Icon(
                                 imageVector = Icons.Default.SportsMartialArts,
                                 contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(38.dp)
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.size(64.dp)
                             )
                         }
                     }
-                    Column {
-                        Text(
-                            text = coach.name,
-                            color = Color.White,
-                            style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold)
+
+                    Text(
+                        text = coach.name,
+                        color = Color.White,
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = (-0.4).sp
+                        ),
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.MilitaryTech,
+                            contentDescription = null,
+                            tint = JudoGold,
+                            modifier = Modifier.size(17.dp)
                         )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.MilitaryTech,
-                                contentDescription = null,
-                                tint = JudoGold,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text(
-                                text = coach.grade,
-                                color = JudoGold,
-                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
-                            )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = coach.grade,
+                            color = JudoGold,
+                            style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = if (coach.isActive) {
+                            com.example.ui.theme.JudoSuccess.copy(alpha = 0.25f)
+                        } else {
+                            Color.White.copy(alpha = 0.15f)
                         }
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = if (coach.isActive) {
-                                com.example.ui.theme.JudoSuccess.copy(alpha = 0.2f)
-                            } else {
-                                Color.White.copy(alpha = 0.15f)
-                            },
-                            modifier = Modifier.padding(top = 4.dp)
-                        ) {
-                            Text(
-                                text = if (coach.isActive) "COACH ACTIF" else "COACH DÉSACTIVÉ",
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                style = MaterialTheme.typography.labelSmall.copy(
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 10.sp,
-                                    color = if (coach.isActive) Color(0xFFB9F6CA) else Color.White
-                                )
+                    ) {
+                        Text(
+                            text = if (coach.isActive) "COACH ACTIF" else "COACH DÉSACTIVÉ",
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 10.sp,
+                                color = if (coach.isActive) Color(0xFFB9F6CA) else Color.White
                             )
-                        }
+                        )
                     }
                 }
             }
@@ -208,8 +229,7 @@ fun CoachDetailScreen(
         // ===== Corps =====
         Column(
             modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .fillMaxWidth()
                 .padding(16.dp)
                 .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(14.dp)

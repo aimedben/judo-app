@@ -18,6 +18,9 @@ local.properties
 debug.keystore
 ui_dump*.xml
 replay_pid*.log
+hs_err_pid*.log
+*.bak
+/releases
 
 # Signing keystore (secret - never publish)
 my-upload-key.jks

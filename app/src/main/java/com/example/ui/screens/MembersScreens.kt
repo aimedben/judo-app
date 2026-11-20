@@ -23,6 +23,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
@@ -30,9 +31,11 @@ import androidx.compose.material.icons.filled.Cake
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -56,13 +59,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -77,11 +85,15 @@ import com.example.data.model.SessionStatus
 import com.example.ui.components.AddEditMemberDialog
 import com.example.ui.components.BeltBadge
 import com.example.ui.components.GroupBadge
+import com.example.ui.components.HeroActionButton
+import com.example.ui.components.HeroStat
+import com.example.ui.components.JudoHeroCard
 import com.example.ui.components.JudokaAvatar
 import com.example.ui.components.MemberAttendanceCalendar
 import com.example.ui.theme.JudoGold
 import com.example.ui.theme.JudoRed
 import com.example.ui.theme.JudoSuccess
+import com.example.ui.theme.JudoWarning
 import coil.compose.AsyncImage
 import com.example.util.MemberDuplicates
 
@@ -99,9 +111,29 @@ fun MembersScreen(
     onSearchQueryChange: (String) -> Unit = {},
     selectedGroupFilter: String = "ALL",
     onSelectedGroupFilterChange: (String) -> Unit = {},
+    allAttendance: List<AttendanceWithMember> = emptyList(),
+    scheduledSessions: List<com.example.data.model.ScheduledTrainingSession> = emptyList(),
+    officialStartDate: String = "",
     modifier: Modifier = Modifier
 ) {
     var isAddDialogOpen by remember { mutableStateOf(false) }
+    var quickFilter by remember { mutableStateOf(MemberQuickFilter.ALL) }
+
+    // Absences du mois par athlete (meme definition que la fiche : jours de planning
+    // de SA categorie, hors periode de blessure). Sert a assombrir les cartes.
+    val absenceCounts = remember(allAttendance, scheduledSessions, officialStartDate, members) {
+        val now = java.util.Calendar.getInstance()
+        com.example.util.AbsenceAlerts.membersWithMonthAbsences(
+            members = members,
+            attendances = allAttendance,
+            scheduledSessions = scheduledSessions,
+            officialStartDate = officialStartDate,
+            todayMillis = now.timeInMillis,
+            year = now.get(java.util.Calendar.YEAR),
+            month0 = now.get(java.util.Calendar.MONTH),
+            threshold = 1
+        ).associate { it.member.id to it.absencesMonth }
+    }
 
     val presentTodayIds = remember(todayAttendance) {
         todayAttendance.map { it.memberId }.toSet()
@@ -139,8 +171,16 @@ fun MembersScreen(
             .sortedBy { JudoGroup.fromString(com.example.util.GroupCodes.canonical(it.code).first()).ordinal }
     }
 
-    val filteredMembers = remember(members, searchQuery, selectedGroupFilter, presentTodayIds) {
+    val filteredMembers = remember(members, searchQuery, selectedGroupFilter, presentTodayIds, quickFilter) {
         members
+            .filter { m ->
+                when (quickFilter) {
+                    MemberQuickFilter.ALL -> true
+                    MemberQuickFilter.INJURED -> m.isInjured
+                    MemberQuickFilter.PRESENT -> presentTodayIds.contains(m.id)
+                    MemberQuickFilter.ABSENT -> !presentTodayIds.contains(m.id)
+                }
+            }
             .filter { m ->
                 selectedGroupFilter == "ALL" ||
                     com.example.util.GroupCodes.matches(selectedGroupFilter, m.groupCode)
@@ -179,35 +219,27 @@ fun MembersScreen(
         contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp)
     ) {
         item {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = "Athlètes",
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Black)
+            JudoHeroCard(
+                title = "Athlètes",
+                subtitle = "${members.size} judoka${if (members.size > 1) "s" else ""} inscrits • ${presentTodayIds.size} présent(s) aujourd'hui",
+                icon = Icons.Default.People,
+                action = {
+                    HeroActionButton(
+                        text = "Ajouter",
+                        icon = Icons.Default.PersonAdd,
+                        onClick = { isAddDialogOpen = true },
+                        modifier = Modifier.testTag("members_add_btn")
                     )
-                    Text(
-                        text = "${members.size} judoka${if (members.size > 1) "s" else ""} inscrits • ${presentTodayIds.size} présent(s) aujourd'hui",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                },
+                stats = listOf(
+                    HeroStat(value = "${members.size}", label = "Inscrits"),
+                    HeroStat(value = "${presentTodayIds.size}", label = "Présents"),
+                    HeroStat(
+                        value = "${members.count { it.isInjured }}",
+                        label = "Blessés"
                     )
-                }
-
-                Button(
-                    onClick = { isAddDialogOpen = true },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed, contentColor = Color.White),
-                    modifier = Modifier.testTag("members_add_btn")
-                ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Ajouter", fontWeight = FontWeight.Bold)
-                }
-            }
+                )
+            )
         }
 
         item {
@@ -222,6 +254,85 @@ fun MembersScreen(
                     .fillMaxWidth()
                     .testTag("members_search_field")
             )
+        }
+
+        item {
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterChip(
+                        selected = quickFilter == MemberQuickFilter.ALL,
+                        onClick = { quickFilter = MemberQuickFilter.ALL },
+                        label = { Text("Tous (${members.size})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = JudoRed,
+                            selectedLabelColor = Color.White
+                        ),
+                        modifier = Modifier.testTag("members_filter_all")
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = quickFilter == MemberQuickFilter.INJURED,
+                        onClick = {
+                            quickFilter = if (quickFilter == MemberQuickFilter.INJURED) {
+                                MemberQuickFilter.ALL
+                            } else {
+                                MemberQuickFilter.INJURED
+                            }
+                        },
+                        label = { Text("Blessés (${members.count { it.isInjured }})") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Warning,
+                                contentDescription = null,
+                                modifier = Modifier.size(FilterChipDefaults.IconSize)
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = JudoWarning,
+                            selectedLabelColor = Color.White,
+                            selectedLeadingIconColor = Color.White
+                        ),
+                        modifier = Modifier.testTag("members_filter_injured")
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = quickFilter == MemberQuickFilter.PRESENT,
+                        onClick = {
+                            quickFilter = if (quickFilter == MemberQuickFilter.PRESENT) {
+                                MemberQuickFilter.ALL
+                            } else {
+                                MemberQuickFilter.PRESENT
+                            }
+                        },
+                        label = { Text("Présents (${presentTodayIds.size})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = JudoSuccess,
+                            selectedLabelColor = Color.White
+                        ),
+                        modifier = Modifier.testTag("members_filter_present")
+                    )
+                }
+                item {
+                    FilterChip(
+                        selected = quickFilter == MemberQuickFilter.ABSENT,
+                        onClick = {
+                            quickFilter = if (quickFilter == MemberQuickFilter.ABSENT) {
+                                MemberQuickFilter.ALL
+                            } else {
+                                MemberQuickFilter.ABSENT
+                            }
+                        },
+                        label = { Text("Absents (${(members.size - presentTodayIds.size).coerceAtLeast(0)})") },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            selectedLabelColor = Color.White
+                        ),
+                        modifier = Modifier.testTag("members_filter_absent")
+                    )
+                }
+            }
         }
 
         if (groupFilterOptions.size > 1) {
@@ -263,7 +374,12 @@ fun MembersScreen(
                     contentAlignment = Alignment.Center
                 ) {
                     Text(
-                        text = "Aucun athlète ne correspond à cette recherche.",
+                        text = when (quickFilter) {
+                            MemberQuickFilter.INJURED -> "Aucun athlète blessé actuellement."
+                            MemberQuickFilter.PRESENT -> "Aucun athlète présent aujourd'hui."
+                            MemberQuickFilter.ABSENT -> "Aucun athlète absent : tout le monde est présent."
+                            MemberQuickFilter.ALL -> "Aucun athlète ne correspond à cette recherche."
+                        },
                         style = MaterialTheme.typography.bodyMedium.copy(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -275,12 +391,16 @@ fun MembersScreen(
                 MemberListRow(
                     member = member,
                     isPresentToday = presentTodayIds.contains(member.id),
+                    absenceCount = absenceCounts[member.id] ?: 0,
                     onClick = { onSelectMember(member.id) }
                 )
             }
         }
     }
 }
+
+/** Filtres rapides de la liste des athlètes (tous / blessés / présents / absents). */
+private enum class MemberQuickFilter { ALL, INJURED, PRESENT, ABSENT }
 
 /** Une puce de la barre de filtres : code technique du groupe + nom lisible de la catégorie. */
 private data class GroupFilterOption(
@@ -292,31 +412,70 @@ private data class GroupFilterOption(
 private fun MemberListRow(
     member: Member,
     isPresentToday: Boolean,
+    absenceCount: Int = 0,
     onClick: () -> Unit
 ) {
+    val isInjured = member.isInjured
+    val surface = MaterialTheme.colorScheme.surface
+    val beltColor = member.belt.primaryColor
+
+    // La carte reprend la couleur de la ceinture de l'athlete (meme principe que la
+    // carte orange des blesses) : fond teinte + liseré de la couleur de ceinture.
+    val beltTinted = androidx.compose.ui.graphics.lerp(surface, beltColor, 0.18f)
+
+    // Les absences ne font PLUS assombrir la carte : chaque absence est signalée par
+    // une ligne noire diagonale (rayures dessinées derrière le contenu, voir
+    // drawAbsenceDiagonals). Le fond reste la teinte ceinture de l'athlete.
+    val containerColor = when {
+        isInjured -> Color(0xFFFFF3E0)
+        isPresentToday -> androidx.compose.ui.graphics.lerp(beltTinted, JudoSuccess, 0.14f)
+        else -> beltTinted
+    }
+    // Contraste automatique : texte clair des que le fond devient sombre.
+    val onContainer = when {
+        isInjured -> Color(0xFF5D4037)
+        containerColor.luminance() < 0.45f -> Color.White
+        else -> MaterialTheme.colorScheme.onSurface
+    }
     Card(
         shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isPresentToday) {
-                JudoSuccess.copy(alpha = 0.06f)
-            } else {
-                MaterialTheme.colorScheme.surface
-            }
-        ),
-        border = CardDefaults.outlinedCardBorder(),
+        colors = CardDefaults.cardColors(containerColor = containerColor),
+        border = if (isInjured) {
+            androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFFFB74D))
+        } else {
+            androidx.compose.foundation.BorderStroke(1.4.dp, beltColor.copy(alpha = 0.65f))
+        },
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
             .testTag("member_row_${member.id}")
     ) {
-        Row(
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(14.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .then(
+                    if (isInjured) {
+                        Modifier.drawBehind {
+                            drawInjuryDiagonals(
+                                color = JudoRed.copy(alpha = 0.13f),
+                                spacing = 28f,
+                                stroke = 7f
+                            )
+                        }
+                    } else {
+                        Modifier
+                    }
+                )
         ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
             JudokaAvatar(
                 name = member.fullName,
                 belt = member.belt,
@@ -332,10 +491,35 @@ private fun MemberListRow(
                     Text(
                         text = member.fullName,
                         style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = onContainer,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.weight(1f, fill = false)
                     )
+                    if (isInjured) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = Color(0xFFE65100).copy(alpha = 0.16f)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp),
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MedicalServices,
+                                    contentDescription = "Blessé",
+                                    tint = Color(0xFFE65100),
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Text(
+                                    text = "Blessé",
+                                    color = Color(0xFFE65100),
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                                )
+                            }
+                        }
+                    }
                     if (member.status == "SUSPENDU") {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
@@ -367,13 +551,13 @@ private fun MemberListRow(
                         Icon(
                             imageVector = Icons.Default.Phone,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                            tint = onContainer.copy(alpha = 0.65f),
                             modifier = Modifier.size(12.dp)
                         )
                         Text(
                             text = member.phone,
                             style = MaterialTheme.typography.labelSmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = onContainer.copy(alpha = 0.8f)
                             ),
                             maxLines = 1
                         )
@@ -410,12 +594,27 @@ private fun MemberListRow(
                     }
                 }
 
+                if (absenceCount > 0) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = JudoRed.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = "$absenceCount abs.",
+                            color = JudoRed,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
+                }
+
                 Icon(
                     imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                     contentDescription = "Ouvrir la fiche",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                    tint = onContainer.copy(alpha = 0.45f),
                     modifier = Modifier.size(18.dp)
                 )
+            }
             }
         }
     }
@@ -462,7 +661,8 @@ fun MemberDetailScreen(
                     dayOfWeekName = it.dayOfWeekName,
                     startTime = it.startTime,
                     endTime = it.endTime,
-                    categoryName = it.categoryName
+                    categoryName = it.categoryName,
+                    cancelledDates = it.cancelledDates
                 )
             }
             .distinctBy { "${it.dayOfWeekName}|${it.startTime}".lowercase() }
@@ -504,28 +704,27 @@ fun MemberDetailScreen(
         )
     }
 
-    Column(
+    LazyColumn(
         modifier = modifier
             .fillMaxSize()
-            .testTag("member_detail_screen")
+            .testTag("member_detail_screen"),
+        verticalArrangement = Arrangement.spacedBy(14.dp),
+        contentPadding = PaddingValues(bottom = 32.dp)
     ) {
-        // ===== En-tete thematique : degrade aux couleurs de la ceinture =====
-        MemberBeltHeader(
-            member = member,
-            categoryName = categoryName,
-            totalAttendances = totalAttendances,
-            attendanceRate = attendanceRate,
-            onBack = onBack
-        )
-
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(horizontal = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-            contentPadding = PaddingValues(top = 12.dp, bottom = 32.dp)
-        ) {
+        // ===== En-tete thematique : degrade aux couleurs de la ceinture.
+        // Place DANS la liste : il defile avec la fiche au lieu de rester fixe.
         item {
+            MemberBeltHeader(
+                member = member,
+                categoryName = categoryName,
+                totalAttendances = totalAttendances,
+                attendanceRate = attendanceRate,
+                onBack = onBack
+            )
+        }
+
+        item {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             Card(
                 shape = RoundedCornerShape(20.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -606,8 +805,10 @@ fun MemberDetailScreen(
                 }
             }
         }
+        }
 
         item {
+            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             MemberAttendanceCalendar(
                 member = member,
                 attendanceList = attendanceList,
@@ -617,7 +818,7 @@ fun MemberDetailScreen(
                 onRecordAttendanceForDate = onRecordAttendanceForDate,
                 onDeleteAttendanceForDate = onDeleteAttendanceForDate
             )
-        }
+            }
         }
     }
 }
@@ -731,16 +932,25 @@ private fun MemberBeltHeader(
                 )
             }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 6.dp, bottom = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(9.dp)
             ) {
-                // Photo ou initiales, cercle borde comme la medaille de la fiche coach
+                // Grande photo de profil (150 dp) avec anneau de ceinture
                 Box(
                     modifier = Modifier
-                        .size(74.dp)
-                        .border(2.dp, onBelt.copy(alpha = 0.6f), CircleShape)
+                        .size(128.dp)
+                        .shadow(
+                            elevation = 18.dp,
+                            shape = CircleShape,
+                            ambientColor = Color.Black.copy(alpha = 0.35f),
+                            spotColor = Color.Black.copy(alpha = 0.35f)
+                        )
+                        .border(3.dp, onBelt.copy(alpha = 0.75f), CircleShape)
+                        .padding(5.dp)
                         .clip(CircleShape)
                         .background(onBelt.copy(alpha = 0.12f)),
                     contentAlignment = Alignment.Center
@@ -761,50 +971,92 @@ private fun MemberBeltHeader(
                             .joinToString("")
                         Text(
                             text = initials,
-                            style = MaterialTheme.typography.headlineSmall.copy(
+                            style = MaterialTheme.typography.headlineLarge.copy(
                                 fontWeight = FontWeight.Black,
+                                fontSize = 44.sp,
                                 color = onBelt
                             )
                         )
                     }
                 }
-                Column {
-                    Text(
-                        text = member.fullName,
-                        style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold),
-                        color = onBelt
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        BeltBadge(belt = member.belt)
-                        GroupBadge(group = member.group)
-                    }
-                    if (categoryName.isNotBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = onBelt.copy(alpha = 0.18f),
-                            modifier = Modifier
-                                .testTag("member_category_badge")
-                                .padding(top = 4.dp)
-                        ) {
-                            Text(
-                                text = categoryName,
-                                color = onBelt,
-                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-                        }
-                    }
+
+                Text(
+                    text = member.fullName,
+                    style = MaterialTheme.typography.headlineMedium.copy(
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = (-0.4).sp
+                    ),
+                    color = onBelt,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    BeltBadge(belt = member.belt)
+                    GroupBadge(group = member.group)
+                }
+
+                if (categoryName.isNotBlank()) {
                     Surface(
-                        shape = RoundedCornerShape(6.dp),
+                        shape = RoundedCornerShape(50),
                         color = onBelt.copy(alpha = 0.18f),
-                        modifier = Modifier.padding(top = 4.dp)
+                        modifier = Modifier.testTag("member_category_badge")
                     ) {
                         Text(
-                            text = if (member.status == "ACTIF") "Compte actif" else "Compte suspendu",
+                            text = categoryName,
                             color = onBelt,
                             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                         )
+                    }
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = onBelt.copy(alpha = 0.18f)
+                ) {
+                    Text(
+                        text = when (member.status) {
+                            "ACTIF" -> "Compte actif"
+                            "BLESSE" -> "Blessé"
+                            else -> "Compte suspendu"
+                        },
+                        color = onBelt,
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                    )
+                }
+
+                if (member.isInjured) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = Color(0xFFFFE0B2),
+                        modifier = Modifier.testTag("member_injury_badge")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MedicalServices,
+                                contentDescription = null,
+                                tint = Color(0xFFE65100),
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Text(
+                                text = when {
+                                    member.injuryStartDate.isBlank() -> "Blessé — retour non prévu"
+                                    member.injuryEndDate.isBlank() -> "Blessé depuis ${member.injuryStartDate}"
+                                    else -> "Blessé ${member.injuryStartDate} → ${member.injuryEndDate}"
+                                },
+                                color = Color(0xFF8D4E00),
+                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold)
+                            )
+                        }
                     }
                 }
             }
@@ -873,5 +1125,27 @@ private fun MemberHeaderStat(
                 maxLines = 1
             )
         }
+    }
+}
+
+/**
+ * Rayures diagonales legeres, dessinees derriere le contenu d'une carte.
+ * Utilisees pour signaler visuellement un athlete blesse.
+ */
+private fun DrawScope.drawInjuryDiagonals(
+    color: Color,
+    spacing: Float,
+    stroke: Float
+) {
+    if (size.height <= 0f || size.width <= 0f) return
+    var x = -size.height
+    while (x < size.width) {
+        drawLine(
+            color = color,
+            start = Offset(x, size.height),
+            end = Offset(x + size.height, 0f),
+            strokeWidth = stroke
+        )
+        x += spacing
     }
 }

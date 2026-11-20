@@ -37,6 +37,7 @@ import com.example.data.repository.JudoRepository
 import com.example.data.repository.MemberAttendanceStat
 import com.example.ui.screens.StatPeriod
 import com.example.util.CardDataParser
+import com.example.util.CancelledSessionDays
 import com.example.util.ExtractedMemberInfo
 import com.example.util.GroupCodes
 import com.example.util.NameKey
@@ -106,6 +107,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val lastSyncReport: StateFlow<SyncReport?> = _lastSyncReport.asStateFlow()
 
     fun updateSupabaseConfig(url: String, anonKey: String, autoSync: Boolean, dailySync: Boolean) {
+        if (_userRole.value != UserRole.ADMIN) return
         supabaseSyncService.updateConfig(url, anonKey, autoSync, dailySync)
     }
 
@@ -129,31 +131,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun restoreBackupJson(jsonString: String): Result<String> {
+        if (_userRole.value != UserRole.ADMIN) {
+            return Result.failure(Exception("Restauration reservee a l'administrateur"))
+        }
         return supabaseSyncService.restoreBackupJson(jsonString)
     }
 
     fun isOnline(): Boolean {
         return supabaseSyncService.isOnline()
-    }
-
-    private fun startDaily22hSyncChecker() {
-        viewModelScope.launch {
-            while (true) {
-                delay(60_000L)
-                try {
-                    val cal = java.util.Calendar.getInstance()
-                    val hour = cal.get(java.util.Calendar.HOUR_OF_DAY)
-                    val minute = cal.get(java.util.Calendar.MINUTE)
-                    if (hour == 22 && minute == 0 && supabaseConfig.value.isDaily22hSyncEnabled && isOnline()) {
-                        val report = supabaseSyncService.performFullSync(progressiveRefresh())
-                        _lastSyncReport.value = report
-                        if (report.isSuccess && report.itemsReceived > 0) {
-                            refreshStatesFromRoom()
-                        }
-                    }
-                } catch (_: Exception) {}
-            }
-        }
     }
 
     private val _themePreference = MutableStateFlow(
@@ -499,6 +484,136 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val scheduledSessions: StateFlow<List<ScheduledTrainingSession>> = _scheduledSessions.asStateFlow()
 
+    // ---- Journal des jours de séance ANNULEES -------------------------------------------
+    // Source de vérité : SharedPreferences + colonne `cancelled_session_days` de la
+    // table cloud `club_settings`. Les sessions de l'état UI transportent les dates
+    // de leur groupe (cancelledDates), ce qui neutralise les absences partout
+    // (alertes, agenda de la fiche, centre SMS, tableau de bord).
+    private val _cancelledSessionDays =
+        MutableStateFlow<List<CancelledSessionDays.Day>>(emptyList())
+    val cancelledSessionDays: StateFlow<List<CancelledSessionDays.Day>> =
+        _cancelledSessionDays.asStateFlow()
+
+    private fun loadCancelledSessionDays() {
+        _cancelledSessionDays.value = CancelledSessionDays.load(prefs)
+        applyCancelledDaysToScheduledState()
+    }
+
+    private fun cancelledDatesForGroup(groupCode: String): List<String> {
+        if (groupCode.isBlank()) return emptyList()
+        return _cancelledSessionDays.value
+            .filter { com.example.util.GroupCodes.matches(it.groupCode, groupCode) }
+            .map { it.dateString }
+            .distinct()
+            .sorted()
+    }
+
+    /** Recopie les annulations du journal dans chaque session de l'état UI puis persiste. */
+    private fun applyCancelledDaysToScheduledState() {
+        _scheduledSessions.value = _scheduledSessions.value.map { s ->
+            val dates = cancelledDatesForGroup(s.groupCode)
+            if (s.cancelledDates == dates) s else s.copy(cancelledDates = dates)
+        }
+    }
+
+    private fun persistCancelledSessionDays() {
+        CancelledSessionDays.save(prefs, _cancelledSessionDays.value)
+        applyCancelledDaysToScheduledState()
+        viewModelScope.launch {
+            supabaseSyncService.enqueueClubSettings()
+            try {
+                for (session in _scheduledSessions.value) {
+                    supabaseSyncService.enqueueScheduledSession(
+                        ScheduledSessionEntity.fromDomain(session)
+                    )
+                }
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /**
+     * Pris dans l'écran coach (« Annuler la séance ») : la séance du jour pour la
+     * catégorie a lieu mais N'EST PAS comptée : personne ne sera marqué absent ce
+     * jour-là, ni dans les alertes, ni sur l'agenda de la fiche.
+     *
+     * La séance active est FERMÉE sans condition (comme si elle n'avait jamais été
+     * créée) : re-sélectionner la catégorie ne doit jamais rouvrir une séance
+     * annulée, même si la consignation du jour échoue plus bas.
+     */
+    fun cancelCoachSessionDay(session: com.example.data.model.ActiveTrainingSession) {
+        _activeSession.value = null
+        val dateStr = session.startDate
+        if (dateStr.isBlank()) return
+        val groupCode = getTodayScheduledSessionForCategory(session.categoryId)?.groupCode
+            ?: _categories.value.firstOrNull { it.id == session.categoryId }?.groupCode
+            ?: ""
+        if (groupCode.isBlank()) return
+        val day = CancelledSessionDays.Day(groupCode, dateStr)
+        if (_cancelledSessionDays.value.any { it.key == day.key }) return
+        _cancelledSessionDays.value = _cancelledSessionDays.value + day
+        persistCancelledSessionDays()
+    }
+
+    /** Annulation manuelle depuis le planning admin (séance + date connue). */
+    fun cancelScheduledSessionDate(sessionId: String, dateString: String) {
+        val target = _scheduledSessions.value.firstOrNull { it.id == sessionId } ?: return
+        if (dateString.isBlank()) return
+        val day = CancelledSessionDays.Day(target.groupCode, dateString)
+        if (_cancelledSessionDays.value.any { it.key == day.key }) return
+        _cancelledSessionDays.value = _cancelledSessionDays.value + day
+        persistCancelledSessionDays()
+    }
+
+    /** Rétablissement : la date annulée est retirée du journal (les absences re-comptent). */
+    fun restoreScheduledSessionDate(sessionId: String, dateString: String) {
+        val target = _scheduledSessions.value.firstOrNull { it.id == sessionId } ?: return
+        val day = CancelledSessionDays.Day(target.groupCode, dateString)
+        if (_cancelledSessionDays.value.none { it.key == day.key }) return
+        _cancelledSessionDays.value = _cancelledSessionDays.value.filterNot { it.key == day.key }
+        persistCancelledSessionDays()
+    }
+
+    /**
+     * Annulation manuelle choisie par l'admin : DATE + CATÉGORIE (dashboard > Séances
+     * > « Séance annulée… »). Les athlètes dont le groupe correspond au code [groupCode]
+     * ne compteront PAS absents le [dateString] indiqué.
+     */
+    fun cancelSessionDayForGroup(groupCode: String, dateString: String) {
+        if (groupCode.isBlank() || dateString.isBlank()) return
+        val day = CancelledSessionDays.Day(groupCode, dateString)
+        if (_cancelledSessionDays.value.any { it.key == day.key }) return
+        _cancelledSessionDays.value = _cancelledSessionDays.value + day
+        persistCancelledSessionDays()
+    }
+
+    /** Rétablissement par (groupe, date) : l'absence re-devient comptable ce jour-là. */
+    fun restoreSessionDayForGroup(groupCode: String, dateString: String) {
+        if (groupCode.isBlank() || dateString.isBlank()) return
+        val day = CancelledSessionDays.Day(groupCode, dateString)
+        if (_cancelledSessionDays.value.none { it.key == day.key }) return
+        _cancelledSessionDays.value = _cancelledSessionDays.value.filterNot { it.key == day.key }
+        persistCancelledSessionDays()
+    }
+
+    /**
+     * Édition d'une séance annulée (Historique > Séances annulées) : remplace le
+     * couple (oldGroup, oldDate) par (newGroup, newDate) en une seule écriture
+     * (journal local + push cloud + ré-prise en compte des séances programmées).
+     */
+    fun updateSessionDay(oldGroup: String, oldDate: String, newGroup: String, newDate: String) {
+        if (oldGroup.isBlank() || oldDate.isBlank() || newGroup.isBlank() || newDate.isBlank()) return
+        val oldKey = CancelledSessionDays.Day(oldGroup, oldDate).key
+        val newDay = CancelledSessionDays.Day(newGroup, newDate)
+        val current = _cancelledSessionDays.value
+        if (!current.any { it.key == oldKey }) return
+        _cancelledSessionDays.value = current
+            .filterNot { it.key == oldKey }
+            .plus(newDay)
+            .distinctBy { it.key }
+        persistCancelledSessionDays()
+    }
+
     init {
         val savedSessionsJson = prefs.getString("scheduled_sessions_json", null)
         if (!savedSessionsJson.isNullOrBlank()) {
@@ -526,7 +641,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadCategoriesFromDatabase()
         loadPastSessionsFromDatabase()
         loadScheduledSessionsFromDatabase()
-        startDaily22hSyncChecker()
+        loadCancelledSessionDays()
         startLocalSnapshotWriter()
     }
 
@@ -566,6 +681,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         loadCategoriesFromDatabase()
         loadPastSessionsFromDatabase()
         loadScheduledSessionsFromDatabase()
+        loadCancelledSessionDays()
         // Le profil administrateur / coach a pu etre complete par le pull club_settings.
         _adminProfile.value = loadAdminProfile()
         _coachProfile.value = loadCoachProfile()
@@ -604,6 +720,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     _scheduledSessions.value = deduped
                     if (deduped.size != stored.size) saveScheduledSessionsToPrefs()
+                    applyCancelledDaysToScheduledState()
                 }
             } catch (_: Exception) {
             }
@@ -937,6 +1054,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 database.clubDao().insertPastSession(PastSessionEntity.fromDomain(session))
                 supabaseSyncService.enqueuePastSession(PastSessionEntity.fromDomain(session))
+                // La validation doit partir AU MOMENT MEME : réessaie tant que la ligne
+                // n'a pas quitté la file (jusqu'à 4 tentatives), sans attendre le sync
+                // complet quotidien.
+                supabaseSyncService.pushNowWithRetry("PAST_SESSIONS", session.id)
             } catch (_: Exception) {
             }
         }
@@ -1037,6 +1158,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setUserRole(role: UserRole) {
         _userRole.value = role
+        // Le rôle ne conditionne plus les écritures cloud : un coach doit pouvoir
+        // synchroniser ses pointages sans passer par le PIN administrateur.
     }
 
     fun startSession(session: ActiveTrainingSession) {
@@ -1561,6 +1684,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun saveMember(member: Member) {
+        if (_userRole.value != UserRole.ADMIN) return
         viewModelScope.launch {
             if (member.id == 0L) {
                 // Règle : créer une fiche n'est jamais un pointage. L'athlète démarre
@@ -1574,6 +1698,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun deleteMember(member: Member) {
+        if (_userRole.value != UserRole.ADMIN) return
         viewModelScope.launch {
             // Suppression en cascade des empreintes faciales (aucune donnee orpheline).
             faceTemplates.deleteForMember(member.id)

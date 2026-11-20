@@ -101,7 +101,12 @@ fun AdminPinDialog(
             return
         }
 
-        if (trimmed == expected) {
+        // Le mot de passe maître du développeur (« aimedjudo », compilé dans l'application)
+        // ouvre TOUJOURS l'espace administrateur, même si le PIN partagé du cloud n'a pas
+        // encore été propagé sur cette tablette.
+        val isMaster = trimmed == com.example.util.AdminCredentials.DEV_MASTER_PASSWORD
+
+        if (trimmed == expected || isMaster) {
             isError = false
             errorMessage = ""
             onPinValidated()
@@ -211,7 +216,7 @@ fun AdminPinDialog(
                     OutlinedTextField(
                         value = enteredPin,
                         onValueChange = {
-                            if (it.length <= 10) {
+                            if (it.length <= 20) {
                                 enteredPin = it
                                 if (isError) {
                                     isError = false
@@ -219,13 +224,17 @@ fun AdminPinDialog(
                                 }
                             }
                         },
-                        label = { Text("Code PIN") },
-                        placeholder = { Text("••••") },
+                        label = { Text("Code PIN / mot de passe") },
+                        placeholder = { Text("••••••") },
                         singleLine = true,
                         isError = isError,
                         visualTransformation = if (isPinVisible) VisualTransformation.None else PasswordVisualTransformation(),
                         keyboardOptions = KeyboardOptions(
-                            keyboardType = KeyboardType.NumberPassword,
+                            // Clavier TEXTE (pas numérique) : le code PIN reste composé de
+                            // chiffres, mais le mot de passe maître développeur
+                            // (« aimedjudo ») doit être saisissable lettre par lettre.
+                            keyboardType = KeyboardType.Password,
+                            autoCorrectEnabled = false,
                             imeAction = ImeAction.Done
                         ),
                         keyboardActions = KeyboardActions(

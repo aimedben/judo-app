@@ -2,7 +2,6 @@ package com.example.util.face
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.util.Log
 import ai.onnxruntime.OnnxTensor
 import ai.onnxruntime.OrtEnvironment
 import ai.onnxruntime.OrtSession
@@ -64,7 +63,6 @@ class EdgeFaceOnnxEmbedder private constructor(
             }
         } catch (e: Exception) {
             // Jamais de log de vecteur ni d'image : uniquement le type d'erreur.
-            Log.w("FaceEmbedder", "Inference EdgeFace impossible: ${e.javaClass.simpleName}")
             null
         }
     }
@@ -92,7 +90,6 @@ class EdgeFaceOnnxEmbedder private constructor(
                 val bytes = context.assets.open(MODEL_ASSET).use { it.readBytes() }
                 val hash = sha256(bytes)
                 if (!hash.equals(EXPECTED_SHA256, ignoreCase = true)) {
-                    Log.e("FaceEmbedder", "Hash du modele inattendu: modele ignore")
                     return null
                 }
 
@@ -118,7 +115,6 @@ class EdgeFaceOnnxEmbedder private constructor(
                     dimensions = dims
                 )
             } catch (e: Throwable) {
-                Log.w("FaceEmbedder", "Chargement EdgeFace impossible: ${e.javaClass.simpleName}")
                 null
             }
         }

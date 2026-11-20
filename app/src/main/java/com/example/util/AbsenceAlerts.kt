@@ -46,6 +46,23 @@ object AbsenceAlerts {
         .mapNotNull { it.dayOfWeekName.trim().lowercase(Locale.FRENCH).let { n -> dayOfWeekByFrenchName[n] } }
         .toSet()
 
+    /**
+     * Dates annulees qui concernent ce membre : chaque session planifiee transportant
+     * sa liste d'annulations (voir [ScheduledTrainingSession.cancelledDates] et
+     * [com.example.util.CancelledSessionDays]), la seance choisie ne compte pas.
+     */
+    private fun memberCancelledDates(
+        member: Member,
+        scheduledSessions: List<ScheduledTrainingSession>
+    ): Set<String> = scheduledSessions
+        .filter { s ->
+            (GroupCodes.matches(s.groupCode, member.groupCode) ||
+                s.categoryName.equals(member.group.name, ignoreCase = true)) &&
+                s.cancelledDates.isNotEmpty()
+        }
+        .flatMap { it.cancelledDates }
+        .toSet()
+
     private fun dateString(year: Int, month0: Int, day: Int): String =
         String.format(Locale.US, "%04d-%02d-%02d", year, month0 + 1, day)
 
@@ -55,6 +72,11 @@ object AbsenceAlerts {
     /**
      * Athletes dont le nombre d'absences du mois [month0] ([year]) depasse
      * [threshold], tries du plus grand nombre au plus petit.
+     *
+     * Definition STRICTE alignee sur l'agenda : une absence n'est comptee QUE les
+     * jours d'entrainement prevus par le planning de SA categorie. Un jour sans
+     * seance programmee pour l'athlete n'est jamais une absence, meme si une autre
+     * categorie s'est entrainee ce jour-la.
      */
     fun membersWithMonthAbsences(
         members: List<Member>,
@@ -68,7 +90,6 @@ object AbsenceAlerts {
     ): List<Alert> {
         val attendedByMember = attendances.groupBy { it.memberId }
             .mapValues { (_, rows) -> rows.map { it.dateString }.toHashSet() }
-        val clubSessionDays = attendances.map { it.dateString }.toHashSet()
 
         val todayCal = Calendar.getInstance().apply { timeInMillis = todayMillis }
         val todayStr = String.format(
@@ -86,21 +107,26 @@ object AbsenceAlerts {
         val alerts = mutableListOf<Alert>()
         for (member in members) {
             if (member.status != "ACTIF") continue
+            // Un athlete blesse n'est jamais compte absent (ni notifie, ni SMS).
+            if (member.isInjured) continue
             val attends = attendedByMember[member.id] ?: emptySet()
             val slotDays = memberTrainingDayOfWeeks(member, scheduledSessions)
+            // Journal d'annulation porte PAR les sessions planifiees (seance annulee
+            // ce jour-la, via l'ecran coach) : jamais compte comme absence.
+            val cancelledDays = memberCancelledDates(member, scheduledSessions)
             var count = 0
             for (day in 1..maxDays) {
                 val dateStr = dateString(year, month0, day)
                 if (dateStr > todayStr) break
+                if (member.isInjuredOn(dateStr)) continue
+                if (dateStr in cancelledDays) continue
                 val dayCal = Calendar.getInstance().apply {
                     clear()
                     set(year, month0, day)
                 }
                 val dow = dayCal.get(Calendar.DAY_OF_WEEK)
-                val isTrainingDay = dow in slotDays ||
-                    clubSessionDays.contains(dateStr) ||
-                    attends.contains(dateStr)
-                if (!isTrainingDay) continue
+                // Uniquement les jours prevus par le planning de SA categorie.
+                if (dow !in slotDays) continue
                 if (!OfficialPeriod.isOfficial(dateStr, officialStartDate)) continue
                 if (attends.contains(dateStr)) continue
                 count++

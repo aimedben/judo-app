@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.Button
@@ -75,7 +76,9 @@ data class TrainingSlot(
     val dayOfWeekName: String,
     val startTime: String,
     val endTime: String,
-    val categoryName: String = ""
+    val categoryName: String = "",
+    /** Dates annulées pour ce créneau (journal partagé via club_settings). */
+    val cancelledDates: List<String> = emptyList()
 ) {
     val label: String get() = "$dayOfWeekName $startTime–$endTime"
 
@@ -123,17 +126,18 @@ fun MemberAttendanceCalendar(
         trainingSlots.mapNotNull { it.calendarDayOfWeek }.toSet()
     }
 
+    // Dates ou la seance a ete ANNULEE (bouton « Annuler la seance » du coach) :
+    // jamais une absence pour la categorie ce jour-la, meme sans pointage.
+    val cancelledDates = remember(trainingSlots) {
+        trainingSlots.flatMap { it.cancelledDates }.toSet()
+    }
+
     // Selected date to view details
     var selectedDateString by remember { mutableStateOf<String?>(todayDateString) }
 
     // Map of this member's attendances by dateString (YYYY-MM-DD)
     val memberAttendanceMap = remember(attendanceList) {
         attendanceList.associateBy { it.dateString }
-    }
-
-    // Dates where ANY session was held by the club
-    val clubSessionDates = remember(allClubAttendances) {
-        allClubAttendances.map { it.dateString }.toSet()
     }
 
     // Month label formatter
@@ -191,19 +195,23 @@ fun MemberAttendanceCalendar(
         val isPastOrToday = dayCal.timeInMillis <= todayCalendar.timeInMillis || dateStr == todayDateString
         val isToday = dateStr == todayDateString
 
-        // It is considered a training day if it matches selected training days,
-        // or if a club session was held, or if the member attended
-        val isTrainingDay = selectedTrainingDays.contains(dayOfWeek) ||
-                clubSessionDates.contains(dateStr) ||
-                memberAttendanceMap.containsKey(dateStr)
-
         val attendance = memberAttendanceMap[dateStr]
         val isPresent = attendance != null
+        // Jour couvert par une blessure declaree : jamais compte absent.
+        val isInjuredDay = member.isInjuredOn(dateStr)
+
+        // Jour d'entrainement = UNIQUEMENT un jour du planning de SA categorie
+        // (ou un jour ou l'athlete a ete pointe, pour toujours afficher sa presence).
+        // Une seance d'une AUTRE categorie ne rend jamais l'athlete absent.
+        // Une seance ANNULEE ce jour-la n'est jamais une absence non plus.
+        val isCancelledDay = dateStr in cancelledDates
+        val isTrainingDay = (selectedTrainingDays.contains(dayOfWeek) && !isCancelledDay) || isPresent
+
         // Pointage officiel : rien avant la date de debut reglee par l'admin ne compte
         // (ni seance, ni absence, ni taux). Les donnees restent en base.
         val isCounting = com.example.util.OfficialPeriod.isOfficial(dateStr, officialStartDate)
 
-        if (isTrainingDay && isPastOrToday && isCounting) {
+        if (isTrainingDay && isPastOrToday && isCounting && !isInjuredDay) {
             monthlyTotalTrainingSessions++
             if (isPresent) {
                 monthlyPresentSessions++
@@ -219,6 +227,7 @@ fun MemberAttendanceCalendar(
             isToday = isToday,
             isPastOrToday = isPastOrToday,
             isTrainingDay = isTrainingDay,
+            isInjuredPeriod = isInjuredDay,
             isPresent = isPresent,
             isCounting = isCounting,
             attendance = attendance
@@ -273,12 +282,7 @@ fun MemberAttendanceCalendar(
                             text = "Agenda des Présences",
                             style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
                         )
-                        Text(
-                            text = "Vert = Présent • Rouge = Absent",
-                            style = MaterialTheme.typography.labelSmall.copy(
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        )
+                        
                     }
                 }
 
@@ -535,6 +539,7 @@ private data class CalendarDayData(
     val isToday: Boolean,
     val isPastOrToday: Boolean,
     val isTrainingDay: Boolean,
+    val isInjuredPeriod: Boolean = false,
     val isPresent: Boolean,
     val isCounting: Boolean,
     val attendance: Attendance?
@@ -564,6 +569,21 @@ private fun CalendarDayCell(
                     imageVector = Icons.Default.Check,
                     contentDescription = "Présent",
                     tint = Color.White,
+                    modifier = Modifier.size(10.dp)
+                )
+            }
+        }
+
+        // PERIODE DE BLESSURE: AMBER (Orange) avec icone medicale
+        dayData.isInjuredPeriod && !dayData.isPresent -> {
+            cellColor = Color(0xFFFFE0B2)
+            contentColor = Color(0xFF8D4E00)
+            borderColor = Color(0xFFFFB74D)
+            badgeIcon = {
+                Icon(
+                    imageVector = Icons.Default.MedicalServices,
+                    contentDescription = "Blessé",
+                    tint = Color(0xFFE65100),
                     modifier = Modifier.size(10.dp)
                 )
             }
@@ -916,7 +936,7 @@ private fun SelectedDayDetailCard(
                                 modifier = Modifier.size(18.dp)
                             )
                             Text(
-                                text = "Pas de séance officielle ce jour (Repos)",
+                                text = "Jour Repos",
                                 style = MaterialTheme.typography.bodySmall.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
