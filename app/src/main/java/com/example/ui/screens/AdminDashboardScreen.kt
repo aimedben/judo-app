@@ -73,6 +73,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -300,6 +302,7 @@ fun AdminDashboardScreen(
                     RevealSection(index = 0) {
                         HeroBanner(
                             adminName = adminProfile.name,
+adminProfile = adminProfile,
                             clubName = clubSettings.clubName.ifBlank { "Judo Club Seddouk" },
                             currentDate = currentDate,
                             currentTime = currentTime,
@@ -593,6 +596,7 @@ fun AdminDashboardScreen(
 @Composable
 private fun HeroBanner(
     adminName: String,
+    adminProfile: AdminProfile,
     clubName: String,
     currentDate: String,
     currentTime: String,
@@ -654,13 +658,24 @@ private fun HeroBanner(
                         .clickable { onOpenProfile() }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Text(
-                            text = initialsOf(adminName),
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontWeight = FontWeight.Black,
-                                color = Color.White
+                        if (!adminProfile.photoUri.isNullOrBlank()) {
+                            AsyncImage(
+                                model = adminProfile.photoUri,
+                                contentDescription = "Photo profil administrateur",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .clip(CircleShape)
                             )
-                        )
+                        } else {
+                            Text(
+                                text = initialsOf(adminName),
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontWeight = FontWeight.Black,
+                                    color = Color.White
+                                )
+                            )
+                        }
                     }
                 }
 
