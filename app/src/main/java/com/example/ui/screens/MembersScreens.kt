@@ -457,14 +457,14 @@ private fun MemberListRow(
     // drawAbsenceDiagonals). Le fond reste la teinte ceinture de l'athlete.
     val isSuspended = member.isSuspended
     val containerColor = when {
-        isSuspended -> JudoRed.copy(alpha = 0.16f)
+        isSuspended -> Color(0xFFFFEBEE)
         isInjured -> Color(0xFFFFF3E0)
         isPresentToday -> androidx.compose.ui.graphics.lerp(beltTinted, JudoSuccess, 0.14f)
         else -> beltTinted
     }
     // Contraste automatique : texte clair des que le fond devient sombre.
     val onContainer = when {
-        isSuspended -> Color(0xFF7F1D1D)
+        isSuspended -> Color(0xFFB71C1C)
         isInjured -> Color(0xFF5D4037)
         containerColor.luminance() < 0.45f -> Color.White
         else -> MaterialTheme.colorScheme.onSurface
@@ -557,13 +557,13 @@ private fun MemberListRow(
                     if (member.status == "SUSPENDU") {
                         Surface(
                             shape = RoundedCornerShape(6.dp),
-                            color = JudoRed.copy(alpha = 0.12f)
+                            color = JudoRed
                         ) {
                             Text(
                                 text = "Suspendu",
-                                color = JudoRed,
+                                color = Color.White,
                                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
-                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                             )
                         }
                     }
@@ -662,6 +662,9 @@ fun MemberDetailScreen(
     categories: List<JudoCategory> = emptyList(),
     scheduledSessions: List<com.example.data.model.ScheduledTrainingSession> = emptyList(),
     officialStartDate: String = "",
+    weightEntries: List<com.example.data.model.WeightEntry> = emptyList(),
+    onRecordWeight: (Float) -> Unit = {},
+    onDeleteWeight: (Long) -> Unit = {},
     onBack: () -> Unit,
     onManualCheckIn: (Long) -> Unit,
     onRecordAttendanceForDate: (Long, String) -> Unit,
@@ -842,6 +845,14 @@ fun MemberDetailScreen(
         }
 
         item {
+            WeightSection(
+                entries = weightEntries,
+                onRecord = onRecordWeight,
+                onDelete = onDeleteWeight
+            )
+        }
+
+        item {
             Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             MemberAttendanceCalendar(
                 member = member,
@@ -854,6 +865,114 @@ fun MemberDetailScreen(
             )
             }
         }
+    }
+}
+
+@Composable
+private fun WeightSection(
+    entries: List<com.example.data.model.WeightEntry>,
+    onRecord: (Float) -> Unit,
+    onDelete: (Long) -> Unit
+) {
+    var showDialog by remember { mutableStateOf(false) }
+    var input by remember { mutableStateOf("") }
+
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = CardDefaults.outlinedCardBorder(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .testTag("weight_section")
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "Poids",
+                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                )
+                Button(
+                    onClick = { showDialog = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = JudoRed, contentColor = Color.White),
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.testTag("weight_add_btn")
+                ) {
+                    Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Ajouter")
+                }
+            }
+
+            val latest = entries.firstOrNull()
+            if (latest != null) {
+                Text(
+                    text = "Dernier : ${latest.weightKg} kg (${latest.dateString})",
+                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold)
+                )
+            } else {
+                Text(
+                    text = "Aucune mesure enregistrée.",
+                    style = MaterialTheme.typography.bodySmall.copy(color = MaterialTheme.colorScheme.onSurfaceVariant)
+                )
+            }
+
+            if (entries.isNotEmpty()) {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    entries.forEach { e ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("${e.dateString} — ${e.weightKg} kg", style = MaterialTheme.typography.bodySmall)
+                            IconButton(onClick = { onDelete(e.id) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Supprimer", tint = JudoRed, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDialog) {
+        AlertDialog(
+            onDismissRequest = { showDialog = false; input = "" },
+            title = { Text("Nouvelle mesure de poids") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Date : ${java.time.LocalDate.now()}", style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = input,
+                        onValueChange = { input = it },
+                        label = { Text("Poids (kg)") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val v = input.replace(",", ".").toFloatOrNull()
+                    if (v != null && v > 0f) {
+                        onRecord(v)
+                        showDialog = false
+                        input = ""
+                    }
+                }) { Text("Enregistrer", color = JudoRed, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDialog = false; input = "" }) { Text("Annuler") }
+            }
+        )
     }
 }
 

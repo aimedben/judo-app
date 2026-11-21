@@ -88,7 +88,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         memberDao = database.memberDao(),
         attendanceDao = database.attendanceDao(),
         clubDao = database.clubDao(),
-        syncService = supabaseSyncService
+        syncService = supabaseSyncService,
+        weightEntryDao = database.weightEntryDao()
     )
 
     val supabaseConfig: StateFlow<SupabaseConfig> = supabaseSyncService.config
@@ -1207,6 +1208,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _activeSession.value = null
         persistPastSession(normalized)
     }
+
+    fun weightEntriesFlow(memberId: Long): kotlinx.coroutines.flow.Flow<List<com.example.data.model.WeightEntry>> =
+        repository.weightEntriesForAthlete(memberId)
+
+    fun recordWeight(memberId: Long, weightKg: Float) {
+        viewModelScope.launch { repository.recordWeight(memberId, weightKg) }
+    }
+
+    fun deleteWeight(id: Long) {
+        viewModelScope.launch { repository.deleteWeightEntry(id) }
+    }
+
+    val allWeightEntries: StateFlow<List<com.example.data.model.WeightEntry>> =
+        repository.allWeightEntries.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val allMembers: StateFlow<List<Member>> = repository.allMembers
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())

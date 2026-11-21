@@ -12,6 +12,7 @@ import com.example.data.local.sync.SyncQueueDao
 import com.example.data.local.sync.SyncQueueEntity
 import com.example.data.model.Attendance
 import com.example.data.model.Member
+import com.example.data.model.WeightEntry
 
 @Database(
     entities = [
@@ -22,9 +23,10 @@ import com.example.data.model.Member
         CategoryEntity::class,
         CoachEntity::class,
         ScheduledSessionEntity::class,
-        PastSessionEntity::class
+        PastSessionEntity::class,
+        WeightEntry::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -33,6 +35,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun syncQueueDao(): SyncQueueDao
     abstract fun syncAuditLogDao(): SyncAuditLogDao
     abstract fun clubDao(): ClubDao
+    abstract fun weightEntryDao(): WeightEntryDao
 
     companion object {
         @Volatile
@@ -157,6 +160,25 @@ abstract class AppDatabase : RoomDatabase() {
         }
     }
 
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                "CREATE TABLE IF NOT EXISTS weight_entries (" +
+                    "id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                    "subjectType TEXT NOT NULL, " +
+                    "subjectId INTEGER NOT NULL, " +
+                    "dateString TEXT NOT NULL, " +
+                    "weightKg REAL NOT NULL, " +
+                    "timestamp INTEGER NOT NULL" +
+                    ")"
+            )
+            db.execSQL(
+                "CREATE UNIQUE INDEX IF NOT EXISTS index_weight_entries_subjectType_subjectId_dateString " +
+                    "ON weight_entries(subjectType, subjectId, dateString)"
+            )
+        }
+    }
+
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -164,7 +186,7 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "judo_seddouk.db"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .fallbackToDestructiveMigrationOnDowngrade()
                     .build()
                 INSTANCE = instance

@@ -285,6 +285,7 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
     val todayAttendance by viewModel.todayAttendance.collectAsState()
     val recentAttendance by viewModel.recentAttendance.collectAsState()
     val allAttendance by viewModel.allAttendance.collectAsState()
+    val allWeightEntries by viewModel.allWeightEntries.collectAsState()
     val lastScanned by viewModel.lastScanned.collectAsState()
     val activeCheckInResult by viewModel.activeCheckInResult.collectAsState()
     val unassignedQrCode by viewModel.unassignedQrCode.collectAsState()
@@ -907,6 +908,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         todayAttendance = todayAttendance,
                         recentAttendance = recentAttendance,
                         allAttendance = allAttendance,
+                        allWeightEntries = allWeightEntries,
+                        onRecordWeight = { id, w -> viewModel.recordWeight(id, w) },
+                        onDeleteWeight = { id -> viewModel.deleteWeight(id) },
                         lastScanned = lastScanned,
                         topStats = topStats,
                         isDarkTheme = isDarkTheme,
@@ -1057,6 +1061,9 @@ fun JudoApp(viewModel: MainViewModel, isDarkTheme: Boolean) {
                         todayAttendance = todayAttendance,
                         recentAttendance = recentAttendance,
                         allAttendance = allAttendance,
+                        allWeightEntries = allWeightEntries,
+                        onRecordWeight = { id, w -> viewModel.recordWeight(id, w) },
+                        onDeleteWeight = { id -> viewModel.deleteWeight(id) },
                         lastScanned = lastScanned,
                         topStats = topStats,
                         isDarkTheme = isDarkTheme,
@@ -1318,6 +1325,9 @@ private fun AppScreenContent(
     onManualCheckIn: (Long) -> Unit,
     onRecordAttendanceForDate: (Long, String) -> Unit = { _, _ -> },
     onDeleteAttendanceForDate: (Long, String) -> Unit = { _, _ -> },
+    allWeightEntries: List<com.example.data.model.WeightEntry> = emptyList(),
+    onRecordWeight: (Long, Float) -> Unit = { _, _ -> },
+    onDeleteWeight: (Long) -> Unit = {},
     onSwitchRole: () -> Unit = {},
     onOpenNotifications: () -> Unit = {},
     onOpenSmsCenter: () -> Unit = {},
@@ -1389,6 +1399,9 @@ private fun AppScreenContent(
                 categories = categories,
                 scheduledSessions = scheduledSessions,
                 officialStartDate = clubSettings.officialStartDate,
+                weightEntries = allWeightEntries.filter { it.subjectId == member.id && it.subjectType == "ATHLETE" },
+                onRecordWeight = { w -> onRecordWeight(member.id, w) },
+                onDeleteWeight = onDeleteWeight,
                 onBack = onBackFromMemberDetail,
                 onManualCheckIn = onManualCheckIn,
                 onRecordAttendanceForDate = onRecordAttendanceForDate,

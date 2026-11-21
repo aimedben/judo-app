@@ -2,9 +2,11 @@ package com.example.data.repository
 
 import com.example.data.local.AttendanceDao
 import com.example.data.local.MemberDao
+import com.example.data.local.WeightEntryDao
 import com.example.data.model.Attendance
 import com.example.data.model.AttendanceWithMember
 import com.example.data.model.Member
+import com.example.data.model.WeightEntry
 import kotlinx.coroutines.flow.Flow
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -51,8 +53,10 @@ class JudoRepository(
     private val memberDao: MemberDao,
     private val attendanceDao: AttendanceDao,
     private val clubDao: ClubDao? = null,
-    private val syncService: SupabaseSyncService? = null
+    private val syncService: SupabaseSyncService? = null,
+    private val weightEntryDao: WeightEntryDao? = null
 ) {
+    private val _weightDao get() = weightEntryDao
     val allMembers: Flow<List<Member>> = memberDao.getAllMembers()
     val activeMembersCount: Flow<Int> = memberDao.countActiveMembersFlow()
     val allAttendance: Flow<List<AttendanceWithMember>> = attendanceDao.getAllAttendanceWithMembers()
@@ -370,5 +374,30 @@ class JudoRepository(
     suspend fun clearEntireDatabase() {
         attendanceDao.deleteAllAttendance()
         memberDao.deleteAllMembers()
+    }
+
+    fun weightEntriesForAthlete(memberId: Long): Flow<List<WeightEntry>> =
+        _weightDao?.entriesFor("ATHLETE", memberId)
+            ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    val allWeightEntries: Flow<List<WeightEntry>> =
+        _weightDao?.allEntries() ?: kotlinx.coroutines.flow.flowOf(emptyList())
+
+    suspend fun latestWeightForAthlete(memberId: Long): WeightEntry? =
+        _weightDao?.latestFor("ATHLETE", memberId)
+
+    suspend fun recordWeight(memberId: Long, weightKg: Float, dateString: String = java.time.LocalDate.now().toString()) {
+        _weightDao?.upsert(
+            WeightEntry(
+                subjectType = "ATHLETE",
+                subjectId = memberId,
+                dateString = dateString,
+                weightKg = weightKg
+            )
+        )
+    }
+
+    suspend fun deleteWeightEntry(id: Long) {
+        _weightDao?.deleteById(id)
     }
 }
