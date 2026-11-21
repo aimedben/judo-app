@@ -197,7 +197,11 @@ fun MemberAttendanceCalendar(
         val isToday = dateStr == todayDateString
 
         val attendance = memberAttendanceMap[dateStr]
-        val isPresent = attendance != null
+        // Une seance ANNULEE ce jour-la n'est jamais une absence non plus.
+        val isCancelledDay = dateStr in cancelledDates
+        // Un jour annule n'est jamais "present" visuellement, meme s'il existe
+        // une ligne d'attendance (scan anterieur ou presence synthetique).
+        val isPresent = attendance != null && !isCancelledDay
         // Jour couvert par une blessure declaree : jamais compte absent.
         val isInjuredDay = member.isInjuredOn(dateStr)
         // Athlete suspendu : tous les jours sont des jours de suspension (option 2).
@@ -206,15 +210,13 @@ fun MemberAttendanceCalendar(
         // Jour d'entrainement = UNIQUEMENT un jour du planning de SA categorie
         // (ou un jour ou l'athlete a ete pointe, pour toujours afficher sa presence).
         // Une seance d'une AUTRE categorie ne rend jamais l'athlete absent.
-        // Une seance ANNULEE ce jour-la n'est jamais une absence non plus.
-        val isCancelledDay = dateStr in cancelledDates
         val isTrainingDay = (selectedTrainingDays.contains(dayOfWeek) && !isCancelledDay) || isPresent
 
         // Pointage officiel : rien avant la date de debut reglee par l'admin ne compte
         // (ni seance, ni absence, ni taux). Les donnees restent en base.
         val isCounting = com.example.util.OfficialPeriod.isOfficial(dateStr, officialStartDate)
 
-        if (isTrainingDay && isPastOrToday && isCounting && !isInjuredDay && !isSuspendedDay) {
+        if (isTrainingDay && isPastOrToday && isCounting && !isInjuredDay && !isSuspendedDay && !isCancelledDay) {
             monthlyTotalTrainingSessions++
             if (isPresent) {
                 monthlyPresentSessions++
@@ -232,6 +234,7 @@ fun MemberAttendanceCalendar(
             isTrainingDay = isTrainingDay,
             isInjuredPeriod = isInjuredDay,
             isSuspendedPeriod = isSuspendedDay,
+            isCancelledDay = isCancelledDay,
             isPresent = isPresent,
             isCounting = isCounting,
             attendance = attendance
@@ -546,6 +549,7 @@ private data class CalendarDayData(
     val isTrainingDay: Boolean,
     val isInjuredPeriod: Boolean = false,
     val isSuspendedPeriod: Boolean = false,
+    val isCancelledDay: Boolean = false,
     val isPresent: Boolean,
     val isCounting: Boolean,
     val attendance: Attendance?
@@ -605,6 +609,21 @@ private fun CalendarDayCell(
                     imageVector = Icons.Default.MedicalServices,
                     contentDescription = "Blessé",
                     tint = Color(0xFFE65100),
+                    modifier = Modifier.size(10.dp)
+                )
+            }
+        }
+
+        // SEANCE ANNULEE : gris mute (jamais vert/rouge)
+        dayData.isCancelledDay -> {
+            cellColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+            borderColor = MaterialTheme.colorScheme.outlineVariant
+            badgeIcon = {
+                Icon(
+                    imageVector = Icons.Default.Close,
+                    contentDescription = "Séance annulée",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     modifier = Modifier.size(10.dp)
                 )
             }
