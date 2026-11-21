@@ -654,7 +654,7 @@ private fun HeroBanner(
                     color = Color.White.copy(alpha = 0.16f),
                     border = BorderStroke(1.5.dp, Color.White.copy(alpha = 0.35f)),
                     modifier = Modifier
-                        .size(52.dp)
+                        .size(80.dp)
                         .clickable { onOpenProfile() }
                 ) {
                     Box(contentAlignment = Alignment.Center) {
