@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Event
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.MedicalServices
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
@@ -199,6 +200,8 @@ fun MemberAttendanceCalendar(
         val isPresent = attendance != null
         // Jour couvert par une blessure declaree : jamais compte absent.
         val isInjuredDay = member.isInjuredOn(dateStr)
+        // Athlete suspendu : tous les jours sont des jours de suspension (option 2).
+        val isSuspendedDay = member.isSuspended
 
         // Jour d'entrainement = UNIQUEMENT un jour du planning de SA categorie
         // (ou un jour ou l'athlete a ete pointe, pour toujours afficher sa presence).
@@ -211,7 +214,7 @@ fun MemberAttendanceCalendar(
         // (ni seance, ni absence, ni taux). Les donnees restent en base.
         val isCounting = com.example.util.OfficialPeriod.isOfficial(dateStr, officialStartDate)
 
-        if (isTrainingDay && isPastOrToday && isCounting && !isInjuredDay) {
+        if (isTrainingDay && isPastOrToday && isCounting && !isInjuredDay && !isSuspendedDay) {
             monthlyTotalTrainingSessions++
             if (isPresent) {
                 monthlyPresentSessions++
@@ -228,6 +231,7 @@ fun MemberAttendanceCalendar(
             isPastOrToday = isPastOrToday,
             isTrainingDay = isTrainingDay,
             isInjuredPeriod = isInjuredDay,
+            isSuspendedPeriod = isSuspendedDay,
             isPresent = isPresent,
             isCounting = isCounting,
             attendance = attendance
@@ -449,6 +453,7 @@ fun MemberAttendanceCalendar(
             ) {
             LegendIndicator(color = JudoSuccess, label = "Présent")
             LegendIndicator(color = JudoRed, label = "Absent")
+            LegendIndicator(color = Color.Black, label = "Suspendu")
             LegendIndicator(color = Color(0xFFBBDEFB), label = "Prévu")
             LegendIndicator(color = MaterialTheme.colorScheme.surfaceVariant, label = "Repos")
             }
@@ -540,6 +545,7 @@ private data class CalendarDayData(
     val isPastOrToday: Boolean,
     val isTrainingDay: Boolean,
     val isInjuredPeriod: Boolean = false,
+    val isSuspendedPeriod: Boolean = false,
     val isPresent: Boolean,
     val isCounting: Boolean,
     val attendance: Attendance?
@@ -568,6 +574,21 @@ private fun CalendarDayCell(
                 Icon(
                     imageVector = Icons.Default.Check,
                     contentDescription = "Présent",
+                    tint = Color.White,
+                    modifier = Modifier.size(10.dp)
+                )
+            }
+        }
+
+        // SUSPENSION: NOIR
+        dayData.isSuspendedPeriod && !dayData.isPresent -> {
+            cellColor = Color.Black
+            contentColor = Color.White
+            borderColor = Color.DarkGray
+            badgeIcon = {
+                Icon(
+                    imageVector = Icons.Default.Block,
+                    contentDescription = "Suspendu",
                     tint = Color.White,
                     modifier = Modifier.size(10.dp)
                 )

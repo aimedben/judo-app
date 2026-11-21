@@ -50,6 +50,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.SportsMartialArts
 import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -171,6 +172,7 @@ fun AdminDashboardScreen(
     val activeCategoriesCount = categories.count { it.isActive }
     val sessionsCompletedCount = pastSessions.size
     val injuredCount = allMembers.count { it.status == "ACTIF" && it.isInjured }
+    val suspendedCount = allMembers.count { it.isSuspended }
 
     // Taux de presence : (membre x jour uniques) / (jours de seance x athletes actifs).
     val (periodPresents, periodTotalExpected, attendanceRate) = remember(statPeriod, allAttendance, allMembers, clubSettings) {
@@ -391,6 +393,15 @@ fun AdminDashboardScreen(
                                 subtitle = "athlètes indisponibles",
                                 icon = Icons.Default.Warning,
                                 accent = Color(0xFFD97706),
+                                modifier = Modifier.weight(1f),
+                                onClick = onNavigateToAthletes
+                            )
+                            KpiCard(
+                                title = "Suspendus",
+                                value = "$suspendedCount",
+                                subtitle = "athlètes suspendus",
+                                icon = Icons.Default.Block,
+                                accent = JudoRed,
                                 modifier = Modifier.weight(1f),
                                 onClick = onNavigateToAthletes
                             )

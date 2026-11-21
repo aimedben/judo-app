@@ -1162,7 +1162,14 @@ fun CoachSessionPointageScreen(
                                     ) {
                                         JudokaAvatar(name = member.fullName, belt = member.belt, photoUrl = member.photoUrl, sizeDp = 30)
                                         Column {
-                                            Text(member.fullName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                                Text(member.fullName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                                if (member.isSuspended) {
+                                                    Surface(shape = RoundedCornerShape(6.dp), color = JudoRed.copy(alpha = 0.12f)) {
+                                                        Text("Suspendu", color = JudoRed, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                                                    }
+                                                }
+                                            }
                                             Text("Ceinture ${member.beltName.lowercase()}", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                         }
                                     }
@@ -1246,7 +1253,7 @@ modifier: Modifier = Modifier,
  
     if (showSmsDialog) {
         AbsentSmsDialog(
-            absentMembers = absentMemberObjects,
+            absentMembers = absentMemberObjects.filter { !it.isSuspended },
             sessionDate = session.startDate,
             sessionStartTime = session.startTime,
             clubName = clubName,
@@ -1745,7 +1752,8 @@ private fun StatAthletesDialog(
                                 belt = member.belt,
                                 photoUrl = member.photoUrl,
                                 subtitle = member.group.label,
-                                present = false
+                                present = false,
+                                suspended = member.isSuspended
                             )
                         }
                     }
@@ -1764,7 +1772,8 @@ private fun AthleteStatRow(
     belt: Belt,
     photoUrl: String,
     subtitle: String,
-    present: Boolean
+    present: Boolean,
+    suspended: Boolean = false
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1778,10 +1787,17 @@ private fun AthleteStatRow(
             sizeDp = 38
         )
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = name,
-                style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = name,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                )
+                if (suspended) {
+                    Surface(shape = RoundedCornerShape(6.dp), color = JudoRed.copy(alpha = 0.12f)) {
+                        Text("Suspendu", color = JudoRed, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                    }
+                }
+            }
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall.copy(

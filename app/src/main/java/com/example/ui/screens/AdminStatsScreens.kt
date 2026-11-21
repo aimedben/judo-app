@@ -404,6 +404,9 @@ fun StatFilteredMembersScreen(
             StatFilterMode.ABSENTS -> allMembers
                 .filter { !presentMemberIds.contains(it.id) }
                 .sortedBy { it.fullName.lowercase() }
+            StatFilterMode.SUSPENDUS -> allMembers
+                .filter { it.isSuspended }
+                .sortedBy { it.fullName.lowercase() }
             StatFilterMode.ATTENDANCE_RATE -> allMembers
                 .sortedByDescending { countByMember[it.id] ?: 0 }
         }
@@ -515,7 +518,14 @@ fun StatFilteredMembersScreen(
                             sizeDp = 44
                         )
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            RownameWithStatus(name = member.fullName, isPresent = isPresent)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                                RownameWithStatus(name = member.fullName, isPresent = isPresent)
+                                if (member.isSuspended) {
+                                    Surface(shape = RoundedCornerShape(6.dp), color = JudoRed.copy(alpha = 0.12f)) {
+                                        Text("Suspendu", color = JudoRed, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp))
+                                    }
+                                }
+                            }
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 BeltBadge(belt = member.belt)
                                 GroupBadge(group = member.group)

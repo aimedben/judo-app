@@ -26,5 +26,6 @@ enum class StatFilterMode(
     ALL_MEMBERS("Tous les judokas", "Effectif global du club", JudoGold),
     PRESENTS("Présents", "Judokas ayant participé aux cours", JudoSuccess),
     ABSENTS("Absents", "Judokas sans pointage enregistré", JudoRed),
+    SUSPENDUS("Suspendus", "Judokas suspendus", JudoRed),
     ATTENDANCE_RATE("Taux d'assiduité", "Classement par assiduité", JudoGold)
 }

@@ -91,7 +91,7 @@ import java.util.Locale
 import kotlin.math.ceil
 
 /** Filtre principal de la sélection des athlètes (notamment les filtres d'absence). */
-private enum class SmsMode { TOUS, DERNIERE_SEANCE, ABSENCES_3, ABSENCES_2, ASSIDUITE_FAIBLE }
+private enum class SmsMode { TOUS, DERNIERE_SEANCE, ABSENCES_3, ABSENCES_2, ASSIDUITE_FAIBLE, SUSPENDUS }
 
 /**
  * Centre SMS admin : composition d'un message (toujours pré-rempli, personnalisable),
@@ -187,9 +187,14 @@ fun AdminSmsCenterScreen(
                 val days = attendanceDaysByMember[m.id] ?: 0
                 clubDistinctDays > 0 && (days.toDouble() / clubDistinctDays * 100).toInt() < 50
             }
+            SmsMode.SUSPENDUS -> allMembers.filter { it.isSuspended }
         }
-        // Jamais de SMS a un athlete blesse ou suspendu, quel que soit le filtre.
-        pool.filter { it.status == "ACTIF" && !it.isInjured }.distinctBy { it.id }
+        // Jamais de SMS a un athlete blesse ou suspendu, sauf en mode SUSPENDUS.
+        if (mode == SmsMode.SUSPENDUS) {
+            pool.distinctBy { it.id }
+        } else {
+            pool.filter { it.status == "ACTIF" && !it.isInjured }.distinctBy { it.id }
+        }
     }
 
     val filteredMembers = remember(memberPool, selectedGroupCodes, searchQuery) {
@@ -439,6 +444,15 @@ fun AdminSmsCenterScreen(
                                 onClick = { mode = SmsMode.ASSIDUITE_FAIBLE },
                                 accent = accent,
                                 modifier = Modifier.testTag("sms_filter_low_rate")
+                            )
+                        }
+                        item {
+                            SmsFilterChip(
+                                label = "Suspendus",
+                                selected = mode == SmsMode.SUSPENDUS,
+                                onClick = { mode = SmsMode.SUSPENDUS },
+                                accent = accent,
+                                modifier = Modifier.testTag("sms_filter_suspended")
                             )
                         }
                     }

@@ -128,6 +128,7 @@ fun AdminCategoriesScreen(
             items(categories) { cat ->
                 val membersInCat = allMembers.filter { cat.covers(it.groupCode) || it.group.name.equals(cat.name, ignoreCase = true) }
                 val activeMembers = membersInCat.count { it.status == "ACTIF" }
+                val suspendedMembers = membersInCat.count { it.isSuspended }
 
                 Card(
                     shape = RoundedCornerShape(16.dp),
@@ -306,7 +307,7 @@ fun AdminCategoriesScreen(
                                         tint = Color(0xFF2196F3)
                                     )
                                     Text(
-                                        text = "$activeMembers athlètes actifs • ${membersInCat.size} inscrits",
+                                        text = "$activeMembers actifs • $suspendedMembers suspendus • ${membersInCat.size} inscrits",
                                         style = MaterialTheme.typography.bodySmall.copy(
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         ),

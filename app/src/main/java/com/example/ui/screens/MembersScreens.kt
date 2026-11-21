@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Cake
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
@@ -177,6 +178,7 @@ fun MembersScreen(
                 when (quickFilter) {
                     MemberQuickFilter.ALL -> true
                     MemberQuickFilter.INJURED -> m.isInjured
+                    MemberQuickFilter.SUSPENDED -> m.isSuspended
                     MemberQuickFilter.PRESENT -> presentTodayIds.contains(m.id)
                     MemberQuickFilter.ABSENT -> !presentTodayIds.contains(m.id)
                 }
@@ -298,6 +300,32 @@ fun MembersScreen(
                 }
                 item {
                     FilterChip(
+                        selected = quickFilter == MemberQuickFilter.SUSPENDED,
+                        onClick = {
+                            quickFilter = if (quickFilter == MemberQuickFilter.SUSPENDED) {
+                                MemberQuickFilter.ALL
+                            } else {
+                                MemberQuickFilter.SUSPENDED
+                            }
+                        },
+                        label = { Text("Suspendus (${members.count { it.isSuspended }})") },
+                        leadingIcon = {
+                            Icon(
+                                imageVector = Icons.Default.Block,
+                                contentDescription = null,
+                                modifier = Modifier.size(FilterChipDefaults.IconSize)
+                            )
+                        },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = JudoRed,
+                            selectedLabelColor = Color.White,
+                            selectedLeadingIconColor = Color.White
+                        ),
+                        modifier = Modifier.testTag("members_filter_suspended")
+                    )
+                }
+                item {
+                    FilterChip(
                         selected = quickFilter == MemberQuickFilter.PRESENT,
                         onClick = {
                             quickFilter = if (quickFilter == MemberQuickFilter.PRESENT) {
@@ -376,6 +404,7 @@ fun MembersScreen(
                     Text(
                         text = when (quickFilter) {
                             MemberQuickFilter.INJURED -> "Aucun athlète blessé actuellement."
+                            MemberQuickFilter.SUSPENDED -> "Aucun athlète suspendu actuellement."
                             MemberQuickFilter.PRESENT -> "Aucun athlète présent aujourd'hui."
                             MemberQuickFilter.ABSENT -> "Aucun athlète absent : tout le monde est présent."
                             MemberQuickFilter.ALL -> "Aucun athlète ne correspond à cette recherche."
@@ -400,7 +429,7 @@ fun MembersScreen(
 }
 
 /** Filtres rapides de la liste des athlètes (tous / blessés / présents / absents). */
-private enum class MemberQuickFilter { ALL, INJURED, PRESENT, ABSENT }
+private enum class MemberQuickFilter { ALL, INJURED, SUSPENDED, PRESENT, ABSENT }
 
 /** Une puce de la barre de filtres : code technique du groupe + nom lisible de la catégorie. */
 private data class GroupFilterOption(
@@ -426,13 +455,16 @@ private fun MemberListRow(
     // Les absences ne font PLUS assombrir la carte : chaque absence est signalée par
     // une ligne noire diagonale (rayures dessinées derrière le contenu, voir
     // drawAbsenceDiagonals). Le fond reste la teinte ceinture de l'athlete.
+    val isSuspended = member.isSuspended
     val containerColor = when {
+        isSuspended -> JudoRed.copy(alpha = 0.16f)
         isInjured -> Color(0xFFFFF3E0)
         isPresentToday -> androidx.compose.ui.graphics.lerp(beltTinted, JudoSuccess, 0.14f)
         else -> beltTinted
     }
     // Contraste automatique : texte clair des que le fond devient sombre.
     val onContainer = when {
+        isSuspended -> Color(0xFF7F1D1D)
         isInjured -> Color(0xFF5D4037)
         containerColor.luminance() < 0.45f -> Color.White
         else -> MaterialTheme.colorScheme.onSurface
@@ -440,7 +472,9 @@ private fun MemberListRow(
     Card(
         shape = RoundedCornerShape(18.dp),
         colors = CardDefaults.cardColors(containerColor = containerColor),
-        border = if (isInjured) {
+        border = if (isSuspended) {
+            androidx.compose.foundation.BorderStroke(1.5.dp, JudoRed)
+        } else if (isInjured) {
             androidx.compose.foundation.BorderStroke(1.5.dp, Color(0xFFFFB74D))
         } else {
             androidx.compose.foundation.BorderStroke(1.4.dp, beltColor.copy(alpha = 0.65f))
@@ -997,6 +1031,11 @@ private fun MemberBeltHeader(
                 ) {
                     BeltBadge(belt = member.belt)
                     GroupBadge(group = member.group)
+                    if (member.isSuspended) {
+                        Surface(shape = RoundedCornerShape(50), color = JudoRed.copy(alpha = 0.85f)) {
+                            Text("Suspendu", color = Color.White, style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+                        }
+                    }
                 }
 
                 if (categoryName.isNotBlank()) {

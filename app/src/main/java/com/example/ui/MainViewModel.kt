@@ -1180,6 +1180,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val presentNames = presentAttendances.map { it.fullName }
         val absentNames = categoryMembers
             .filter { it.id !in presentMemberIds }
+            .filter { !it.isSuspended }
             .map { it.fullName }
 
         val newPastSession = PastTrainingSession(
